@@ -21,6 +21,7 @@ var status_label: Label
 var needs_label: Label
 var inventory_label: Label
 var log_view: RichTextLabel
+var event_view: RichTextLabel
 var chat_input: LineEdit
 var queue_status_label: Label
 var mic_button: Button
@@ -44,8 +45,8 @@ func _ready() -> void:
     voice.record_state_changed.connect(_on_recording_state)
     _build_ui()
     pomi.arrived.connect(_on_pomi_arrived)
-    _log("Bienvenido a la casa del primer Pomi. Haz clic en los muebles o usa los botones.")
-    _log("La simulación funciona sin IA. Ollama y Vosk son opcionales.")
+    _event("Bienvenido a la casa del primer Pomi. Haz clic en los muebles o usa los botones.")
+    _event("La simulación funciona sin IA. Ollama y Vosk son opcionales.")
     _refresh_status()
 
 func _build_scene() -> void:
@@ -134,6 +135,15 @@ func _build_ui() -> void:
     commands.add_child(pause_button)
     commands.add_child(_make_button("Guardar", _save_game))
     commands.add_child(_make_button("Cargar", _load_game))
+    var event_caption := Label.new()
+    event_caption.text = "ACTIVIDAD DEL POMI"
+    content.add_child(event_caption)
+    event_view = RichTextLabel.new()
+    event_view.fit_content = false
+    event_view.scroll_following = true
+    event_view.custom_minimum_size = Vector2(0, 82)
+    content.add_child(event_view)
+    content.add_child(HSeparator.new())
     var chat_caption := Label.new()
     chat_caption.text = "HABLAR CON POMI (IA LOCAL OPCIONAL)"
     content.add_child(chat_caption)
@@ -170,7 +180,7 @@ func _process(delta: float) -> void:
         dwell_time -= delta
         if dwell_time <= 0.0:
             var action_result: String = state.execute_action(busy_action)
-            _log("[Acción verificada] " + action_result)
+            _event("[Acción verificada] " + action_result)
             busy_action = ""
             idle_time = 3.5
     elif busy_action.is_empty() and not pomi.moving:
@@ -187,19 +197,19 @@ func _send_to_action(action_name: String, manual: bool) -> void:
     if not home.interactables.has(action_name):
         return
     if action_name == "eat" and int(state.inventory["food"]) < 1:
-        _log("No queda comida. La simulación no puede inventar recursos.")
+        _event("No queda comida. La simulación no puede inventar recursos.")
         return
     if action_name == "shower" and int(state.inventory["water"]) < 1:
-        _log("No queda agua.")
+        _event("No queda agua.")
         return
     var target: Vector3 = home.interactables[action_name]["approach"]
     if not pomi.request_walk(target, action_name):
-        _log("Pomi no encontró camino hasta ese mueble.")
+        _event("Pomi no encontró camino hasta ese mueble.")
         return
     busy_action = action_name
     dwell_time = 999.0 # se empieza a contar al llegar
     if manual:
-        _log("Has pedido al Pomi: " + str(home.interactables[action_name]["title"]))
+        _event("Has pedido al Pomi: " + str(home.interactables[action_name]["title"]))
 
 func _on_pomi_arrived() -> void:
     if not busy_action.is_empty():
@@ -218,7 +228,13 @@ func _refresh_status() -> void:
 
 func _log(message: String) -> void:
     if log_view:
-        log_view.append_text(message + "\n")
+        # add_text no interpreta etiquetas BBCode escritas por el jugador o el modelo.
+        log_view.add_text(message + "\n")
+
+
+func _event(message: String) -> void:
+    if event_view:
+        event_view.add_text(message + "\n")
 
 func _send_chat(text_value: String) -> void:
     var text_message := text_value.strip_edges()
@@ -271,14 +287,14 @@ func _on_ollama_chunk(delta_text: String) -> void:
     if log_view == null:
         return
     if not chat_stream_started:
-        log_view.append_text("Pomi: ")
+        log_view.add_text("Pomi: ")
         chat_stream_started = true
-    log_view.append_text(delta_text)
+    log_view.add_text(delta_text)
 
 
 func _on_ollama_answer(text_value: String) -> void:
     if chat_stream_started:
-        log_view.append_text("\n")
+        log_view.add_text("\n")
     else:
         _log("Pomi: " + text_value)
     chat_stream_started = false
@@ -288,7 +304,7 @@ func _on_ollama_answer(text_value: String) -> void:
 
 func _on_ollama_error(reason: String) -> void:
     if chat_stream_started and log_view:
-        log_view.append_text("\n")
+        log_view.add_text("\n")
     chat_stream_started = false
     _log("[IA no disponible] " + reason)
     call_deferred("_dispatch_queued_chat")
@@ -312,14 +328,14 @@ func _update_queue_status() -> void:
 
 
 func _on_ollama_stats(info: String) -> void:
-    _log("[Diagnóstico] " + info)
+    _event("[Diagnóstico] " + info)
 
 
 func _on_transcript(text_value: String) -> void:
     _send_chat(text_value)
 
 func _on_voice_error(reason: String) -> void:
-    _log("[Micrófono] " + reason)
+    _event("[Micrófono] " + reason)
 
 func _on_recording_state(active: bool) -> void:
     mic_button.text = "Detener" if active else "Grabar voz"
@@ -336,27 +352,27 @@ func _save_game() -> void:
     data["conversation"] = ollama.export_history()
     var file := FileAccess.open("user://teseracta_save_v1.json", FileAccess.WRITE)
     if file == null:
-        _log("Error de guardado: %s" % FileAccess.get_open_error())
+        _event("Error de guardado: %s" % FileAccess.get_open_error())
         return
     file.store_string(JSON.stringify(data, "  "))
     file.close()
-    _log("Partida guardada en user://teseracta_save_v1.json")
+    _event("Partida guardada en user://teseracta_save_v1.json")
 
 func _load_game() -> void:
     var file := FileAccess.open("user://teseracta_save_v1.json", FileAccess.READ)
     if file == null:
-        _log("No se encontró ninguna partida guardada.")
+        _event("No se encontró ninguna partida guardada.")
         return
     var data: Variant = JSON.parse_string(file.get_as_text())
     if not (data is Dictionary) or not state.load_dict(data):
-        _log("El guardado no es válido o no es compatible.")
+        _event("El guardado no es válido o no es compatible.")
         return
     pomi.restore_position(data.get("pomi_position", []))
     ollama.load_history(data.get("conversation", []))
     busy_action = ""
     idle_time = 4.0
     _refresh_status()
-    _log("Partida cargada correctamente.")
+    _event("Partida cargada correctamente.")
 
 func _unhandled_input(event: InputEvent) -> void:
     if event is InputEventMouseButton and event.pressed:
