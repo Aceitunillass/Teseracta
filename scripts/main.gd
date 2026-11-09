@@ -32,7 +32,7 @@ func _ready() -> void:
     add_child(ollama)
     ollama.reply_received.connect(_on_ollama_answer)
     ollama.unavailable.connect(_on_ollama_error)
-    ollama.inference_stats.connect(_on_ollama_stats)
+    ollama.connect("inference_stats", Callable(self, "_on_ollama_stats"))
     voice = VoiceScript.new()
     add_child(voice)
     voice.transcript_ready.connect(_on_transcript)
@@ -216,7 +216,7 @@ func _send_chat(text_value: String) -> void:
     var text_message := text_value.strip_edges().substr(0, 700)
     if text_message.is_empty():
         return
-    if ollama.pending:
+    if bool(ollama.get("pending")):
         _log("Pomi sigue pensando su respuesta anterior. Tu mensaje no se ha enviado; prueba otra vez cuando termine.")
         return
     chat_input.clear()
