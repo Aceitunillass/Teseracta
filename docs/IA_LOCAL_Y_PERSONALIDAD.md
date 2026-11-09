@@ -35,3 +35,28 @@ En la interfaz se imprimen estadísticas `[Diagnóstico] Ollama`: tiempo total, 
 5. **Pruebas longitudinales** de coherencia, retención y cambios de personalidad.
 
 No tratar un prompt más elaborado como si ya implementara estos cinco sistemas. No hay modelo local ni rendimiento definitivo aprobado; probar en el ordenador del usuario.
+
+
+## Diálogo libre y transmisión progresiva (actualización de noviembre de 2026)
+- **No se obliga al Pomi a hablar en un número fijo de palabras o frases.** El parámetro de límite de salida \`num_predict\` ya no está impuesto por el juego; el modelo puede finalizar su respuesta cuando estime oportuno. Existe un límite físico de contexto, RAM y tiempo de computación, no una longitud prefijada por el personaje.
+- El puente de Ollama utiliza \`stream: true\` y procesa NDJSON con \`HTTPClient\` de Godot; muestra cada fragmento recibido en el panel de chat, antes de que termine toda la generación.
+- Si el jugador escribe de nuevo mientras continúa llegando una respuesta, el mensaje se recibe y se deja temporalmente en una cola FIFO. No se muestra mezclado dentro del texto en curso. Esta cola solo vive en memoria durante la sesión; **todavía no es un diálogo simultáneo ni una interrupción humana real**.
+- Existe un mecanismo de diagnóstico para conexiones bloqueadas tras dos minutos de silencio de red; no es un límite de palabras ni duración global de la respuesta.
+- La información de memoria contextual continúa siendo reducida y debe evolucionar hacia la memoria episódica que plantea el dossier. No se debe prometer aprendizaje espontáneo ni memoria ilimitada.
+
+### Alternativas a Qwen (a través de Ollama)
+1. \`ollama pull llama3.2:3b\` — 2,0 GB aprox. Multilingüe, alternativa a comparar por velocidad.
+2. \`ollama pull gemma3:4b\` — 3,4 GB aprox. Modelo multilingüe de 4B.
+3. \`ollama pull phi4-mini\` — 2,5 GB aprox. Modelo de Microsoft orientado a instrucciones.
+4. \`ollama pull mistral:7b\` — 4,4 GB aprox. Más pesado para equipos modestos.
+5. \`ollama pull qwen3:4b-instruct\` — 2,5 GB aprox. Variante de instrucciones de Qwen.
+
+Tras descargar el modelo, cambiar \`model\` en \`config/ai.json\` y reiniciar la escena. Los tamaños indicados son los pesos en disco publicados por Ollama; el uso de RAM/VRAM de inferencia es mayor. Mantener una prueba de velocidad por modelo en el hardware del usuario.
+
+### Otros motores locales (pendientes de integración)
+- **LM Studio**: servidor local con API compatible, requiere un adaptador diferente al formato NDJSON de Ollama.
+- **llama.cpp**: \`llama-server\` admite endpoints compatibles OpenAI y streaming; también necesita un adaptador separado.
+No declarar que están integrados hasta haber implementado y probado sus conectores.
+
+### Validación pendiente
+La estructura y las llamadas de la API fueron revisadas con la documentación actual. **Aún no se ha ejecutado Godot 4.7.2 ni un servidor Ollama real con este código**; habrá que comprobar parseo, streaming, pausa, cola de mensajes, errores de servidor y cierres de conexión en el Windows de destino.
