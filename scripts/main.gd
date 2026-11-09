@@ -25,12 +25,15 @@ var chat_input: LineEdit
 var mic_button: Button
 var pause_button: Button
 var drag_last_pos := Vector2.ZERO
+var chat_stream_started: bool = false
+var queued_chat_messages: Array[String] = []
 
 func _ready() -> void:
     _build_scene()
     ollama = OllamaScript.new()
     add_child(ollama)
     ollama.reply_received.connect(_on_ollama_answer)
+    ollama.connect("reply_delta", Callable(self, "_on_ollama_chunk"))
     ollama.unavailable.connect(_on_ollama_error)
     ollama.connect("inference_stats", Callable(self, "_on_ollama_stats"))
     voice = VoiceScript.new()
@@ -213,28 +216,61 @@ func _log(message: String) -> void:
         log_view.append_text(message + "\n")
 
 func _send_chat(text_value: String) -> void:
-    var text_message := text_value.strip_edges().substr(0, 700)
+    var text_message := text_value.strip_edges()
     if text_message.is_empty():
-        return
-    if bool(ollama.get("pending")):
-        _log("Pomi sigue pensando su respuesta anterior. Tu mensaje no se ha enviado; prueba otra vez cuando termine.")
         return
     chat_input.clear()
     _log("Tú: " + text_message)
     state.remember("El jugador dijo: " + text_message.substr(0, 70))
+    # Recibir el mensaje es inmediato, aunque la inferencia anterior siga en curso.
+    if bool(ollama.get("pending")):
+        queued_chat_messages.append(text_message)
+        return
+    _request_pomi_reply(text_message)
+
+
+func _request_pomi_reply(text_message: String) -> void:
     var facts: Dictionary = {"nombre": "Pomi 01", "ubicacion": "Su casa en Teseracta", "día": state.day_index(), "hora": state.clock_text(), "necesidades": state.needs, "comida_disponible": state.inventory["food"], "agua_disponible": state.inventory["water"], "recuerdos_relevantes": state.history.slice(maxi(0, state.history.size() - 5), state.history.size())}
-    _log("Pomi está pensando…")
+    chat_stream_started = false
     ollama.ask(text_message, facts)
 
+
+func _on_ollama_chunk(delta_text: String) -> void:
+    if log_view == null:
+        return
+    if not chat_stream_started:
+        log_view.append_text("Pomi: ")
+        chat_stream_started = true
+    log_view.append_text(delta_text)
+
+
 func _on_ollama_answer(text_value: String) -> void:
-    _log("Pomi: " + text_value)
+    if chat_stream_started:
+        log_view.append_text("\n")
+    else:
+        _log("Pomi: " + text_value)
+    chat_stream_started = false
     state.remember("Pomi respondió al jugador: " + text_value.substr(0, 70))
+    call_deferred("_dispatch_queued_chat")
+
 
 func _on_ollama_error(reason: String) -> void:
+    if chat_stream_started and log_view:
+        log_view.append_text("\n")
+    chat_stream_started = false
     _log("[IA no disponible] " + reason)
+    call_deferred("_dispatch_queued_chat")
+
+
+func _dispatch_queued_chat() -> void:
+    if not queued_chat_messages.is_empty() and not bool(ollama.get("pending")):
+        var next_message: String = queued_chat_messages.pop_front()
+        _request_pomi_reply(next_message)
+
 
 func _on_ollama_stats(info: String) -> void:
     _log("[Diagnóstico] " + info)
+
 
 func _on_transcript(text_value: String) -> void:
     _log("[Voz reconocida] " + text_value)
