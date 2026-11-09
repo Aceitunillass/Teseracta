@@ -379,7 +379,8 @@ func _observation() -> Dictionary:
 func _start_decision(trigger: String, note: String, incoming_message: String = "") -> void:
     if brain == null or bool(brain.get("pending")):
         return
-    var relevant: Array[Dictionary] = journal.recall(note, 4)
+    var memory_query: String = incoming_message if not incoming_message.is_empty() else note
+    var relevant: Array[Dictionary] = journal.recall(memory_query, 4)
     var recent_turns: Array[Dictionary] = journal.recent_dialogue(8)
     if brain.call("deliberate", _observation(), relevant, trigger + ": " + note, recent_turns, incoming_message):
         next_thought_at = elapsed_real + autonomy_interval
