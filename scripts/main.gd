@@ -22,6 +22,7 @@ var needs_label: Label
 var inventory_label: Label
 var log_view: RichTextLabel
 var chat_input: LineEdit
+var queue_status_label: Label
 var mic_button: Button
 var pause_button: Button
 var drag_last_pos := Vector2.ZERO
@@ -146,6 +147,10 @@ func _build_ui() -> void:
     chat_input.placeholder_text = "Escríbele algo al Pomi..."
     chat_input.text_submitted.connect(_send_chat)
     content.add_child(chat_input)
+    queue_status_label = Label.new()
+    queue_status_label.text = ""
+    queue_status_label.add_theme_font_size_override("font_size", 11)
+    content.add_child(queue_status_label)
     var chat_buttons := HBoxContainer.new()
     content.add_child(chat_buttons)
     chat_buttons.add_child(_make_button("Enviar", func(): _send_chat(chat_input.text)))
@@ -220,12 +225,13 @@ func _send_chat(text_value: String) -> void:
     if text_message.is_empty():
         return
     chat_input.clear()
-    _log("Tú: " + text_message)
     state.remember("El jugador dijo: " + text_message.substr(0, 70))
-    # Recibir el mensaje es inmediato, aunque la inferencia anterior siga en curso.
+    # No intercalar un nuevo mensaje entre fragmentos de la respuesta que aún se dibuja.
     if bool(ollama.get("pending")):
         queued_chat_messages.append(text_message)
+        _update_queue_status()
         return
+    _log("Tú: " + text_message)
     _request_pomi_reply(text_message)
 
 
@@ -265,7 +271,18 @@ func _on_ollama_error(reason: String) -> void:
 func _dispatch_queued_chat() -> void:
     if not queued_chat_messages.is_empty() and not bool(ollama.get("pending")):
         var next_message: String = queued_chat_messages.pop_front()
+        _update_queue_status()
+        _log("Tú: " + next_message)
         _request_pomi_reply(next_message)
+
+
+func _update_queue_status() -> void:
+    if queue_status_label == null:
+        return
+    if queued_chat_messages.is_empty():
+        queue_status_label.text = ""
+    else:
+        queue_status_label.text = "%d mensaje(s) recibido(s) y pendiente(s) de respuesta" % queued_chat_messages.size()
 
 
 func _on_ollama_stats(info: String) -> void:
@@ -273,7 +290,6 @@ func _on_ollama_stats(info: String) -> void:
 
 
 func _on_transcript(text_value: String) -> void:
-    _log("[Voz reconocida] " + text_value)
     _send_chat(text_value)
 
 func _on_voice_error(reason: String) -> void:
