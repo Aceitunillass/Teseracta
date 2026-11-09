@@ -39,6 +39,7 @@ var next_thought_at: float = 9.0
 var refresh_at: float = 0.0
 var autosave_at: float = 35.0
 var last_result: String = "Acabas de iniciar esta version sencilla de la habitacion."
+var chat_retry_at: float = 0.0
 
 func _ready() -> void:
     _load_settings()
@@ -274,7 +275,8 @@ func _process(delta: float) -> void:
     if brain == null or bool(brain.get("pending")) or moving:
         return
     if not queued_chat.is_empty():
-        _dispatch_chat()
+        if elapsed_real >= chat_retry_at:
+            _dispatch_chat()
     elif autonomy_enabled and elapsed_real >= next_thought_at:
         _start_decision("iniciativa_autonoma", "Puedes decidir espontaneamente si hablar, observar, actuar o esperar.")
 
@@ -319,6 +321,7 @@ func _send_chat(message: String) -> void:
         if bool(brain.call("cancel_autonomous_for_chat")):
             _event("Reflexión autónoma interrumpida para atender tu mensaje.")
     if brain != null and not bool(brain.get("pending")) and not moving:
+        chat_retry_at = elapsed_real
         _dispatch_chat()
 
 func _dispatch_chat() -> void:
@@ -329,6 +332,7 @@ func _dispatch_chat() -> void:
     if brain != null and bool(brain.get("pending")):
         queued_chat.pop_front()
     else:
+        chat_retry_at = elapsed_real + 8.0
         _event("No se pudo enviar el mensaje; sigue en cola para reintentar.")
 
 func _request_observation() -> void:
@@ -416,6 +420,7 @@ func _result(message: String) -> void:
 
 func _on_brain_error(message: String) -> void:
     _event("Error de inferencia: " + message)
+    chat_retry_at = elapsed_real + 8.0
     next_thought_at = elapsed_real + autonomy_interval
     # Evitar un ciclo de reintentos en el mismo fotograma cuando falla la conexión.
     call_deferred("_continue_dialogue")
