@@ -38,6 +38,7 @@ var recent_intentions: Array[Dictionary] = []
 var active_destination: String = ""
 var use_after_walk: String = ""
 var walk_target: Vector3 = Vector3.ZERO
+var walk_start_position: Vector3 = Vector3.ZERO
 var moving: bool = false
 var autonomy_enabled: bool = true
 var autonomy_interval: float = 55.0
@@ -377,6 +378,7 @@ func _observation() -> Dictionary:
         },
         "motivo_si_no_puede_moverse": "Salud agotada (0)" if body.health <= 0.0 else ("Reloj corporal pausado: reanudar para desplazarse" if simulation_paused else "Ninguno: se permite caminar incluso con hambre, cansancio o vejiga criticos"),
         "ultimo_resultado_del_mundo": last_result,
+        "experiencias_de_desplazamiento_verificadas": journal.movement_evidence(2),
         "registros_autobiograficos_guardados": journal.entries.size(),
         "acceso_memoria": "El diario conserva más episodios de los que caben en una inferencia; distinguir recuerdos accesibles de recuerdos existentes.",
         "ultimas_intenciones_propias": recent_intentions.duplicate(true),
@@ -533,6 +535,7 @@ func _execute_proposal(action: String, target: String) -> void:
     if action != "move" and action != "use":
         _result("Se rechazó una acción inexistente.")
         return
+    walk_start_position = pomi.position
     walk_target = targets[target]
     active_destination = target
     use_after_walk = target if action == "use" else ""
@@ -550,9 +553,14 @@ func _update_walk(delta: float) -> void:
         active_destination = ""
         var should_use: String = use_after_walk
         use_after_walk = ""
-        if should_use.is_empty():
-            _result("404 llegó a %s." % destination)
-        else:
+        # Solo el motor verifica un desplazamiento. Ni speech ni reflection
+        # pueden escribir esta evidencia como un hecho físico.
+        var actual_distance: float = walk_start_position.distance_to(pomi.position)
+        if actual_distance > 0.01:
+            _result("Desplazamiento comprobado: Godot midió %.2f metros de cambio de posición corporal de 404 al dirigirse a %s." % [actual_distance, destination])
+        elif should_use.is_empty():
+            _result("404 ya estaba en %s; no hubo desplazamiento corporal medible." % destination)
+        if not should_use.is_empty():
             var outcome: Dictionary = body.interact(should_use)
             _result(str(outcome.get("event", "Sin resultado.")))
         return
@@ -560,6 +568,9 @@ func _update_walk(delta: float) -> void:
     var step: float = minf(speed * delta, vector.length())
     if step <= 0.0:
         moving = false
+        var partial_distance: float = walk_start_position.distance_to(pomi.position)
+        if partial_distance > 0.01:
+            _result("Desplazamiento comprobado: Godot midió %.2f metros de cambio de posición corporal de 404 antes de detenerse." % partial_distance)
         _result("404 no pudo continuar caminando por su estado físico.")
         return
     var direction: Vector3 = vector.normalized()
@@ -644,6 +655,7 @@ func _reload_state() -> void:
     moving = false
     use_after_walk = ""
     active_destination = ""
+    walk_start_position = pomi.position
     _event("Estado corporal y posicion recuperados. El diario autobiografico permanece intacto.")
 
 func _restore_from_disk() -> void:
