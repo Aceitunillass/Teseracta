@@ -34,6 +34,17 @@ func clock_text() -> String:
 func day_index() -> int:
     return int(elapsed_minutes / 1440.0) + 1
 
+func _need_intensity(value: float) -> String:
+    # Intensidad de una señal sensorial, NO un mandato de comportamiento.
+    if value < 12.0:
+        return "critica"
+    if value < 35.0:
+        return "intensa"
+    if value < 60.0:
+        return "moderada"
+    return "leve"
+
+
 func observation() -> Dictionary:
     var sensations: Array[String] = []
     if satiety < 35:
@@ -53,6 +64,10 @@ func observation() -> Dictionary:
         "salud_0_a_100": snappedf(health, 0.1),
         "comida_disponible": food_units,
         "sensaciones": sensations,
+        "lectura_de_escalas": "En saciedad, energia, alivio de vejiga y salud: 100 = reserva plena, 0 = reserva agotada. No son porcentajes de necesidad ni órdenes de acción.",
+        "senal_hambre": {"intensidad": _need_intensity(satiety), "reserva": snappedf(satiety, 0.1), "riesgo_fisico": "Por debajo de 12 puede deteriorarse la salud."},
+        "senal_fatiga": {"intensidad": _need_intensity(energy), "reserva": snappedf(energy, 0.1), "riesgo_fisico": "Por debajo de 8 puede deteriorarse la salud; la debilidad dificulta moverse."},
+        "senal_vejiga": {"intensidad": _need_intensity(bladder_relief), "reserva": snappedf(bladder_relief, 0.1), "riesgo_fisico": "La molestia aumenta al agotarse el alivio; en este prototipo no causa daño directo."},
         "capacidad_movimiento": snappedf(movement_factor(), 0.01)
     }
 
