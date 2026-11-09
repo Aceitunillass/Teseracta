@@ -3,6 +3,7 @@ extends Node
 signal decision_ready(decision: Dictionary)
 signal inference_failed(reason: String)
 signal inference_metrics(details: String)
+signal speech_preview(text: String)
 
 const ENDPOINT := "http://127.0.0.1:11434/api/chat"
 const CONFIG := "res://config/ai_404.json"
@@ -14,8 +15,14 @@ var active_trigger: String = ""
 var started_at_ms: int = 0
 var request_timeout_seconds: float = 100.0
 var context_window: int = 3072
-var http: HTTPRequest
-var request_serial: int = 0
+var client: HTTPClient = HTTPClient.new()
+var request_sent: bool = false
+var body_started: bool = false
+var received_bytes: PackedByteArray = PackedByteArray()
+var failed_response_bytes: PackedByteArray = PackedByteArray()
+var request_body: String = ""
+var assembled_answer: String = ""
+var last_preview: String = ""
 
 func _ready() -> void:
     if FileAccess.file_exists(CONFIG):
@@ -52,7 +59,7 @@ func deliberate(perception: Dictionary, autobiographical_context: Array[Dictiona
         "speech_requirement": "Responde verbalmente a la persona en speech. No respondas solo en reflection." if direct_message else "Puedes decidir callar, hablar o actuar.",
         "world_observation": perception,
         "recalled_records": recalled,
-        "protocol": "Devuelve un objeto JSON con speech, action, target y reflection. Sin Markdown ni texto fuera del JSON."
+        "protocol": "Devuelve solo JSON válido y escribe speech primero, después action, target y reflection. Sin Markdown."
     }
     var speech_schema: Dictionary = {"type": "string"}
     if direct_message:
@@ -72,7 +79,7 @@ func deliberate(perception: Dictionary, autobiographical_context: Array[Dictiona
     }
     var payload := {
         "model": model_name,
-        "stream": false,
+        "stream": true,
         "think": false,
         "keep_alive": "30m",
         "format": schema,
@@ -82,28 +89,24 @@ func deliberate(perception: Dictionary, autobiographical_context: Array[Dictiona
         ],
         "options": {"num_ctx": context_window, "temperature": 0.7}
     }
-    request_serial += 1
-    http = HTTPRequest.new()
-    http.timeout = request_timeout_seconds
-    add_child(http)
-    http.request_completed.connect(Callable(self, "_on_response").bind(request_serial))
+    request_body = JSON.stringify(payload)
+    client.close()
+    client.blocking_mode_enabled = false
+    request_sent = false
+    body_started = false
+    received_bytes.clear()
+    failed_response_bytes.clear()
+    assembled_answer = ""
+    last_preview = ""
+    started_at_ms = Time.get_ticks_msec()
+    var result: Error = client.connect_to_host("127.0.0.1", 11434)
+    if result != OK:
+        inference_failed.emit("No fue posible conectar con Ollama (error %d)." % result)
+        return false
     pending = true
     active_trigger = trigger
-    started_at_ms = Time.get_ticks_msec()
-    var result: Error = http.request(
-        ENDPOINT,
-        PackedStringArray(["Content-Type: application/json"]),
-        HTTPClient.METHOD_POST,
-        JSON.stringify(payload)
-    )
-    if result != OK:
-        pending = false
-        active_trigger = ""
-        http.queue_free()
-        http = null
-        inference_failed.emit("No se pudo enviar la solicitud a Ollama (error %d)." % result)
-        return false
     return true
+
 
 func seconds_waiting() -> float:
     if not pending:
@@ -114,61 +117,173 @@ func seconds_waiting() -> float:
 func cancel_autonomous_for_chat() -> bool:
     if not pending or not active_trigger.begins_with("iniciativa_autonoma"):
         return false
-    # Cada solicitud lleva número propio; una respuesta vieja no debe
-    # confundirse con la conversación nueva después de una cancelación.
-    request_serial += 1
+    # Cerrar la conexión cancela la lectura y evita mezclar respuestas.
     pending = false
     active_trigger = ""
-    if is_instance_valid(http):
-        http.cancel_request()
-        http.queue_free()
-    http = null
+    client.close()
+    received_bytes.clear()
+    assembled_answer = ""
+    last_preview = ""
     return true
 
 
-func _on_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, received_serial: int) -> void:
-    if received_serial != request_serial or not pending:
+func _process(_delta: float) -> void:
+    if not pending:
         return
-    var was_direct_message: bool = active_trigger.begins_with("mensaje_del_interlocutor")
+    if seconds_waiting() > request_timeout_seconds:
+        _fail("Ministral superó %.0f s sin terminar. Comprueba el modelo y la carga de Ollama." % request_timeout_seconds)
+        return
+    var result: Error = client.poll()
+    if result != OK:
+        _fail("Fallo de conexión con Ollama (error %d)." % result)
+        return
+    match client.get_status():
+        HTTPClient.STATUS_RESOLVING, HTTPClient.STATUS_CONNECTING, HTTPClient.STATUS_REQUESTING:
+            pass
+        HTTPClient.STATUS_CONNECTED:
+            if not request_sent:
+                var headers := PackedStringArray([
+                    "Content-Type: application/json",
+                    "Accept: application/x-ndjson",
+                    "Content-Length: %d" % request_body.to_utf8_buffer().size()
+                ])
+                var send_error: Error = client.request(HTTPClient.METHOD_POST, "/api/chat", headers, request_body)
+                if send_error != OK:
+                    _fail("Error enviando a Ollama (codigo %d)." % send_error)
+                    return
+                request_sent = true
+            elif body_started:
+                if client.get_response_code() != 200:
+                    _fail("Ollama HTTP %d: %s" % [client.get_response_code(), failed_response_bytes.get_string_from_utf8().substr(0, 300)])
+                else:
+                    _fail("Ollama cerró la conexión sin finalizar la respuesta.")
+        HTTPClient.STATUS_BODY:
+            body_started = true
+            var chunk: PackedByteArray = client.read_response_body_chunk()
+            if chunk.is_empty():
+                return
+            if client.get_response_code() != 200:
+                failed_response_bytes.append_array(chunk)
+                return
+            received_bytes.append_array(chunk)
+            _consume_lines()
+        HTTPClient.STATUS_DISCONNECTED, HTTPClient.STATUS_CANT_CONNECT, HTTPClient.STATUS_CANT_RESOLVE, HTTPClient.STATUS_CONNECTION_ERROR, HTTPClient.STATUS_TLS_HANDSHAKE_ERROR:
+            _fail("Se perdió la conexión con Ollama.")
+
+
+func _consume_lines() -> void:
+    # NDJSON del servidor, no fragmentos arbitrarios de UTF-8.
+    while pending:
+        var at_newline: int = received_bytes.find(10)
+        if at_newline < 0:
+            return
+        var json_line: String = received_bytes.slice(0, at_newline).get_string_from_utf8().strip_edges()
+        received_bytes = received_bytes.slice(at_newline + 1)
+        if json_line.is_empty():
+            continue
+        var decoded: Variant = JSON.parse_string(json_line)
+        if not (decoded is Dictionary):
+            _fail("Ollama devolvió un fragmento NDJSON inválido.")
+            return
+        var packet: Dictionary = decoded
+        if packet.has("error"):
+            _fail(str(packet["error"]))
+            return
+        var message: Variant = packet.get("message", {})
+        if message is Dictionary:
+            var delta_text: String = str(message.get("content", ""))
+            if not delta_text.is_empty():
+                assembled_answer += delta_text
+                if active_trigger.begins_with("mensaje_del_interlocutor"):
+                    var partial: String = _extract_partial_speech(assembled_answer)
+                    if partial.length() > last_preview.length() and partial.begins_with(last_preview):
+                        last_preview = partial
+                        speech_preview.emit(partial)
+        if bool(packet.get("done", false)):
+            _finish(packet)
+            return
+
+
+func _extract_partial_speech(raw_json: String) -> String:
+    # Extraer únicamente el campo "speech", nunca reflection ni JSON crudo.
+    # Se descartan escapes incompletos hasta recibirlos enteros.
+    var key_start: int = raw_json.find('"speech"')
+    if key_start < 0:
+        return ""
+    var colon: int = raw_json.find(":", key_start + 8)
+    if colon < 0:
+        return ""
+    var start: int = colon + 1
+    while start < raw_json.length() and raw_json.substr(start, 1) in [" ", "\n", "\r", "\t"]:
+        start += 1
+    if start >= raw_json.length() or raw_json.substr(start, 1) != '"':
+        return ""
+    var raw_value: String = ""
+    var i: int = start + 1
+    while i < raw_json.length():
+        var character: String = raw_json.substr(i, 1)
+        if character == '"':
+            break
+        if character == "\\":
+            if i + 1 >= raw_json.length():
+                break
+            var escape_char: String = raw_json.substr(i + 1, 1)
+            if escape_char == "u":
+                if i + 5 >= raw_json.length():
+                    break
+                raw_value += raw_json.substr(i, 6)
+                i += 6
+                continue
+            if escape_char not in ['"', "\\", "/", "b", "f", "n", "r", "t"]:
+                break
+            raw_value += raw_json.substr(i, 2)
+            i += 2
+            continue
+        raw_value += character
+        i += 1
+    var decoded: Variant = JSON.parse_string('"' + raw_value + '"')
+    return str(decoded) if decoded is String else ""
+
+
+func _finish(metadata: Dictionary) -> void:
+    if not pending:
+        return
+    var direct: bool = active_trigger.begins_with("mensaje_del_interlocutor")
     pending = false
     active_trigger = ""
-    if is_instance_valid(http):
-        http.queue_free()
-    http = null
-    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
-        inference_failed.emit("Ministral no respondió correctamente (HTTP %d, red %d): %s" % [response_code, result, body.get_string_from_utf8().substr(0, 350)])
+    client.close()
+    var decoded: Variant = JSON.parse_string(assembled_answer.strip_edges())
+    if not (decoded is Dictionary):
+        inference_failed.emit("Ministral no devolvió JSON válido: " + assembled_answer.substr(0, 180))
         return
-    var response: Variant = JSON.parse_string(body.get_string_from_utf8())
-    if not (response is Dictionary):
-        inference_failed.emit("Ollama devolvió un paquete inválido.")
-        return
-    var message: Variant = response.get("message", {})
-    if not (message is Dictionary):
-        inference_failed.emit("Ollama no devolvió mensaje.")
-        return
-    var raw: String = str(message.get("content", "")).strip_edges()
-    var decision: Variant = JSON.parse_string(raw)
-    if not (decision is Dictionary):
-        inference_failed.emit("Ministral no generó una decisión estructurada: " + raw.substr(0, 170))
-        return
-    var valid_actions := ["none", "move", "use", "inspect", "wait"]
-    var valid_targets := ["none", "food", "bed", "toilet", "center"]
+    var decision: Dictionary = decoded
     var action: String = str(decision.get("action", "none"))
     var target: String = str(decision.get("target", "none"))
-    if not valid_actions.has(action) or not valid_targets.has(target):
-        inference_failed.emit("La propuesta contiene una acción o un objetivo inexistente.")
+    if action not in ["none", "move", "use", "inspect", "wait"] or target not in ["none", "food", "bed", "toilet", "center"]:
+        inference_failed.emit("Ministral intentó una acción o destino inexistente.")
         return
-    # El texto es un acto de habla, jamás una acción corporal verificada.
-    var clean: Dictionary = {
+    var final_decision: Dictionary = {
         "speech": str(decision.get("speech", "")),
         "action": action,
         "target": target,
         "reflection": str(decision.get("reflection", "")),
-        "_origin": "direct_message" if was_direct_message else "autonomous"
+        "_origin": "direct_message" if direct else "autonomous"
     }
-    decision_ready.emit(clean)
-    var seconds: float = float(response.get("total_duration", 0)) / 1000000000.0
-    var tokens: int = int(response.get("eval_count", 0))
-    var generation_seconds: float = float(response.get("eval_duration", 0)) / 1000000000.0
-    if seconds > 0.0:
-        inference_metrics.emit("%s: %.1fs, %d tokens, %.1f tokens/s; habla: %d caracteres; origen: %s" % [model_name, seconds, tokens, float(tokens) / maxf(generation_seconds, 0.001), str(clean["speech"]).length(), str(clean["_origin"])])
+    decision_ready.emit(final_decision)
+    var duration: float = float(metadata.get("total_duration", 0)) / 1000000000.0
+    var tokens: int = int(metadata.get("eval_count", 0))
+    var generation_seconds: float = float(metadata.get("eval_duration", 0)) / 1000000000.0
+    if duration > 0.0:
+        inference_metrics.emit("%s: %.1f s, %d tokens, %.1f tokens/s; habla: %d caracteres; origen: %s" % [
+            model_name, duration, tokens, float(tokens) / maxf(generation_seconds, 0.001),
+            str(final_decision["speech"]).length(), str(final_decision["_origin"])
+        ])
+
+
+func _fail(reason: String) -> void:
+    if not pending:
+        return
+    pending = false
+    active_trigger = ""
+    client.close()
+    inference_failed.emit(reason)
