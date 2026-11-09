@@ -6,10 +6,14 @@ signal inference_metrics(details: String)
 
 const ENDPOINT := "http://127.0.0.1:11434/api/chat"
 const CONFIG := "res://config/ai_404.json"
-const IDENTITY := "res://config/identity_404.txt"
+const IDENTITY := "res://config/identity_404_runtime.txt"
 
 var model_name: String = "ministral-3:8b"
 var pending: bool = false
+var active_trigger: String = ""
+var started_at_ms: int = 0
+var request_timeout_seconds: float = 100.0
+var context_window: int = 3072
 var http: HTTPRequest
 
 func _ready() -> void:
@@ -19,8 +23,10 @@ func _ready() -> void:
             var selected: String = str(settings.get("model", model_name)).strip_edges()
             if not selected.is_empty():
                 model_name = selected
+            request_timeout_seconds = clampf(float(settings.get("request_timeout_seconds", request_timeout_seconds)), 25.0, 240.0)
+            context_window = clampi(int(settings.get("context_window", context_window)), 2048, 8192)
     http = HTTPRequest.new()
-    http.timeout = 240.0
+    http.timeout = request_timeout_seconds
     add_child(http)
     http.request_completed.connect(_on_response)
 
@@ -33,10 +39,19 @@ func deliberate(perception: Dictionary, autobiographical_context: Array[Dictiona
     if prompt_text.is_empty():
         inference_failed.emit("No se encontró el protocolo de identidad 404.")
         return false
+    # El archivo de diario sigue íntegro. Solo se limita la información
+    # enviada en ESTA inferencia para que Ministral responda antes.
+    var recalled: Array[Dictionary] = []
+    for entry in autobiographical_context.slice(0, 4):
+        recalled.append({
+            "kind": str(entry.get("kind", "")),
+            "text": str(entry.get("text", "")).substr(0, 380),
+            "provenance": str(entry.get("provenance", "desconocido"))
+        })
     var input_packet: Dictionary = {
         "trigger": trigger,
         "world_observation": perception,
-        "recalled_records": autobiographical_context,
+        "recalled_records": recalled,
         "protocol": "Devuelve un objeto JSON con speech, action, target y reflection. Sin Markdown ni texto fuera del JSON."
     }
     var schema := {
@@ -60,9 +75,11 @@ func deliberate(perception: Dictionary, autobiographical_context: Array[Dictiona
             {"role": "system", "content": prompt_text},
             {"role": "user", "content": JSON.stringify(input_packet)}
         ],
-        "options": {"num_ctx": 6144, "temperature": 0.7}
+        "options": {"num_ctx": context_window, "temperature": 0.7}
     }
     pending = true
+    active_trigger = trigger
+    started_at_ms = Time.get_ticks_msec()
     var result: Error = http.request(
         ENDPOINT,
         PackedStringArray(["Content-Type: application/json"]),
@@ -71,12 +88,31 @@ func deliberate(perception: Dictionary, autobiographical_context: Array[Dictiona
     )
     if result != OK:
         pending = false
+        active_trigger = ""
         inference_failed.emit("No se pudo enviar la solicitud a Ollama (error %d)." % result)
         return false
     return true
 
-func _on_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+func seconds_waiting() -> float:
+    if not pending:
+        return 0.0
+    return float(Time.get_ticks_msec() - started_at_ms) / 1000.0
+
+
+func cancel_autonomous_for_chat() -> bool:
+    if not pending or not active_trigger.begins_with("iniciativa_autonoma"):
+        return false
+    http.cancel_request()
     pending = false
+    active_trigger = ""
+    return true
+
+
+func _on_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+    if not pending:
+        return
+    pending = false
+    active_trigger = ""
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
         inference_failed.emit("Ministral no respondió correctamente (HTTP %d, red %d): %s" % [response_code, result, body.get_string_from_utf8().substr(0, 350)])
         return
