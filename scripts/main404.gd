@@ -34,6 +34,7 @@ var targets: Dictionary = {
     "center": Vector3(0.0, 0.0, 1.15)
 }
 var queued_chat: Array[String] = []
+var recent_intentions: Array[Dictionary] = []
 var active_destination: String = ""
 var use_after_walk: String = ""
 var walk_target: Vector3 = Vector3.ZERO
@@ -246,7 +247,7 @@ func _create_interface() -> void:
     upper.add_child(autonomy_button)
 
     var heading_events := Label.new()
-    heading_events.text = "ACONTECIMIENTOS VERIFICADOS"
+    heading_events.text = "ACTIVIDAD: DECISIONES Y RESULTADOS"
     upper.add_child(heading_events)
     world_log = RichTextLabel.new()
     world_log.scroll_following = true
@@ -346,9 +347,9 @@ func _process(delta: float) -> void:
 
 func _observation() -> Dictionary:
     var objects := {
-        "food": {"label": "Cubo de comida", "position": [-2.45, 0.0, -1.4], "use": "Comer una racion si existe"},
-        "bed": {"label": "Cubo de sueño", "position": [0.0, 0.0, -1.4], "use": "Dormir durante un periodo"},
-        "toilet": {"label": "Cubo de vejiga", "position": [2.45, 0.0, -1.4], "use": "Utilizar el vater"},
+        "food": {"label": "Cubo de comida", "position": [-2.45, 0.0, -1.4], "use": "Comer una racion si existe", "posible_efecto": "Comer reduce el hambre y utiliza una racion de alimento; no aumenta automaticamente el descanso.", "disponibilidad_observable": "Hay raciones" if body.food_units > 0 else "Sin raciones disponibles"},
+        "bed": {"label": "Cubo de sueño", "position": [0.0, 0.0, -1.4], "use": "Dormir durante un periodo", "posible_efecto": "Dormir permite recuperarse del cansancio y avanza el tiempo; otras necesidades pueden continuar cambiando."},
+        "toilet": {"label": "Cubo de vejiga", "position": [2.45, 0.0, -1.4], "use": "Utilizar el vater", "posible_efecto": "El uso alivia la necesidad de vejiga pero no recupera el hambre, energia ni salud."},
         "center": {"label": "Centro de la habitacion", "position": [0.0, 0.0, 1.15], "use": "No se puede usar"}
     }
     return {
@@ -358,6 +359,7 @@ func _observation() -> Dictionary:
         "posicion_actual": [pomi.position.x, pomi.position.y, pomi.position.z],
         "en_movimiento": moving,
         "ultimo_resultado_del_mundo": last_result,
+        "ultimas_intenciones_propias": recent_intentions.duplicate(true),
         "objetos_detectados": objects,
         "sensaciones_corporales": body.observation(),
         "capacidades": ["move", "use", "inspect", "wait", "none"],
@@ -474,8 +476,23 @@ func _continue_dialogue() -> void:
         _dispatch_chat()
 
 func _execute_proposal(action: String, target: String) -> void:
-    if action == "none" or action == "wait":
+    # Registrar TODAS las elecciones del LLM, incluso callar o no actuar.
+    # Esta información no es una experiencia física confirmada.
+    var intention: Dictionary = {
+        "accion_solicitada": action,
+        "objetivo": target,
+        "momento": "dia %d, %s" % [body.day_index(), body.clock_text()]
+    }
+    recent_intentions.append(intention)
+    while recent_intentions.size() > 4:
+        recent_intentions.pop_front()
+    if action == "none":
+        _event("[DECISION DE 404] No solicita acción física.")
         return
+    if action == "wait":
+        _event("[DECISION DE 404] Prefiere esperar por ahora.")
+        return
+    _event("[DECISION DE 404] Solicita %s sobre %s; pendiente de validación." % [action, target])
     if not targets.has(target):
         _result("404 pidió un objetivo que no existe: " + target)
         return
@@ -531,7 +548,7 @@ func _update_walk(delta: float) -> void:
 
 func _result(message: String) -> void:
     last_result = message
-    _event(message)
+    _event("[HECHO CONFIRMADO] " + message)
     journal.record("world_event", message, body.day_index(), body.clock_text())
     next_thought_at = minf(next_thought_at, elapsed_real + 2.0)
 
