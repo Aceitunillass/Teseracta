@@ -32,6 +32,7 @@ func _ready() -> void:
     add_child(ollama)
     ollama.reply_received.connect(_on_ollama_answer)
     ollama.unavailable.connect(_on_ollama_error)
+    ollama.inference_stats.connect(_on_ollama_stats)
     voice = VoiceScript.new()
     add_child(voice)
     voice.transcript_ready.connect(_on_transcript)
@@ -215,10 +216,14 @@ func _send_chat(text_value: String) -> void:
     var text_message := text_value.strip_edges().substr(0, 700)
     if text_message.is_empty():
         return
+    if ollama.pending:
+        _log("Pomi sigue pensando su respuesta anterior. Tu mensaje no se ha enviado; prueba otra vez cuando termine.")
+        return
     chat_input.clear()
     _log("Tú: " + text_message)
     state.remember("El jugador dijo: " + text_message.substr(0, 70))
     var facts: Dictionary = {"nombre": "Pomi 01", "ubicacion": "Su casa en Teseracta", "día": state.day_index(), "hora": state.clock_text(), "necesidades": state.needs, "comida_disponible": state.inventory["food"], "agua_disponible": state.inventory["water"], "recuerdos_relevantes": state.history.slice(maxi(0, state.history.size() - 5), state.history.size())}
+    _log("Pomi está pensando…")
     ollama.ask(text_message, facts)
 
 func _on_ollama_answer(text_value: String) -> void:
@@ -227,6 +232,9 @@ func _on_ollama_answer(text_value: String) -> void:
 
 func _on_ollama_error(reason: String) -> void:
     _log("[IA no disponible] " + reason)
+
+func _on_ollama_stats(info: String) -> void:
+    _log("[Diagnóstico] " + info)
 
 func _on_transcript(text_value: String) -> void:
     _log("[Voz reconocida] " + text_value)
