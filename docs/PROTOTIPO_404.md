@@ -63,3 +63,14 @@ Ministral 3B y 8B admiten imágenes en Ollama. El futuro sistema combinará:
 8. Comprueba la latencia de Ministral 3B/8B y la continuidad de la memoria al cambiar de modelo.
 
 **No se ha ejecutado aún Godot ni Ollama desde este entorno.** Validar los puntos anteriores en Windows antes de considerar estable la versión.
+
+
+## Incidencia de latencia y concurrencia (noviembre de 2026)
+- La configuración original de 404 utilizaba Ministral 8B con un protocolo largo (aprox. 1.900 palabras) y un `HTTPRequest.timeout` de 240 s. Esto podía dejar la interfaz mostrando «procesando una decisión» hasta cuatro minutos.
+- Se conserva el protocolo completo en `config/identity_404.txt` pero el juego utiliza `config/identity_404_runtime.txt`, mucho más corto. No se borra el diario ni se reescribe la biografía: se reduce el contexto enviado a cada inferencia.
+- `config/ai_404.json` define `context_window` (3072 por defecto) y `request_timeout_seconds` (90 por defecto). Son límites de recursos y tiempo de espera de red, **no límites de longitud natural de una respuesta**.
+- Los mensajes del jugador tienen prioridad frente a decisiones autónomas pendientes: Godot cancela una petición autónoma y envía primero el chat. Cuando se trata de otra conversación en curso, espera en cola, con indicador del tiempo de procesamiento.
+- Se aplica una pausa de reintento de 8 s ante errores de envío para no saturar Godot ni Ollama.
+- Esto **no** implementa varios procesos generativos simultáneos por sí mismo. Ollama puede procesar solicitudes concurrentes solo con RAM/VRAM suficiente; en hardware modesto lo adecuado es empezar con una sola inferencia a la vez y medir `ollama ps`.
+- Para probar el modelo ligero sin borrar nada: `ollama pull ministral-3:3b` y después cambiar el nombre de `model` en `config/ai_404.json` a `ministral-3:3b`. Conservar 8B mientras se compara. No instalar dos modelos en memoria a la vez por costumbre.
+- Hay que ejecutar Godot y Ollama en Windows y comprobar compilación, estado de la cola y latencia real; las pruebas estructurales por sí solas no certifican el comportamiento.
