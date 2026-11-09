@@ -344,6 +344,11 @@ func _on_decision(decision: Dictionary) -> void:
     if not spoken.is_empty():
         _say("404: " + spoken)
         journal.record("pomi_utterance", spoken, body.day_index(), body.clock_text())
+    elif str(decision.get("_origin", "")) == "direct_message":
+        # Un JSON válido puede expresar silencio; hacerlo visible como estado
+        # técnico, no fabricar una frase atribuida a 404 ni guardarla como diálogo.
+        _say("[Sistema: 404 no ha emitido ninguna respuesta verbal.]")
+        _event("Ministral devolvió speech vacío al responder un mensaje. Se ejecutará su acción si es válida.")
     var reflection: String = str(decision.get("reflection", "")).strip_edges()
     if not reflection.is_empty():
         journal.record("private_reflection", reflection, body.day_index(), body.clock_text())
