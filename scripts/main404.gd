@@ -238,7 +238,6 @@ func _say(message: String) -> void:
         dialogue.add_text(message + "\n")
 
 func _event(message: String) -> void:
-    last_result = message
     if world_log != null:
         world_log.add_text(message + "\n")
 
@@ -399,6 +398,7 @@ func _update_walk(delta: float) -> void:
         avatar.rotation.y = lerp_angle(avatar.rotation.y, atan2(direction.x, direction.z), minf(1.0, delta * 5.0))
 
 func _result(message: String) -> void:
+    last_result = message
     _event(message)
     journal.record("world_event", message, body.day_index(), body.clock_text())
     next_thought_at = minf(next_thought_at, elapsed_real + 2.0)
