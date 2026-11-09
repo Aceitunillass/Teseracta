@@ -1,412 +1,606 @@
 extends Node3D
-## Teseracta 0.1.0 — Vertical slice: un Pomi, casa interactiva, simulación y puentes locales.
+## Teseracta ZERO — interfaz, visualización y orquestación.
+## La física, las memorias y las solicitudes a Ollama están separadas.
 
-const SimScript = preload("res://scripts/sim_state.gd")
-const AgentScript = preload("res://scripts/pomi_agent.gd")
-const HouseScript = preload("res://scripts/house.gd")
-const OllamaScript = preload("res://scripts/ollama_bridge.gd")
-const VoiceScript = preload("res://scripts/voice_bridge.gd")
-const JournalScript = preload("res://scripts/memory_journal.gd")
+const WorldScript = preload("res://scripts/world.gd")
+const MemoryScript = preload("res://scripts/memory.gd")
+const BrainScript = preload("res://scripts/brain.gd")
 
-var state = SimScript.new()
-var journal = JournalScript.new()
-var home: Node3D
-var pomi: Node3D
-var ollama: Node
-var voice: Node
-var busy_action: String = ""
-var dwell_time: float = 0.0
-var idle_time: float = 3.0
-var hud_timer: float = 0.0
-var camera: Camera3D
-var status_label: Label
-var needs_label: Label
-var inventory_label: Label
-var log_view: RichTextLabel
-var event_view: RichTextLabel
-var chat_input: LineEdit
-var queue_status_label: Label
-var mic_button: Button
-var pause_button: Button
-var drag_last_pos := Vector2.ZERO
-var chat_stream_started: bool = false
-var queued_chat_messages: Array[String] = []
+var world = WorldScript.new()
+var memory = MemoryScript.new()
+var brain: Node
+var avatar: MeshInstance3D
+var objects_root: Node3D
+var status_line: Label
+var dialogue: RichTextLabel
+var message_input: LineEdit
+var prompt_edit: TextEdit
+var model_input: LineEdit
+var memory_edit: TextEdit
+var debug_display: RichTextLabel
+var editor_choice: OptionButton
+var palette_choice: OptionButton
+var material_choice: OptionButton
+var editor_name: LineEdit
+var editor_numbers: Dictionary = {}
+var autonomy_button: Button
+var confirm_clear: ConfirmationDialog
+var queued_messages: Array[String] = []
+var debug_lines: Array[String] = []
+var partial_speech: String = ""
+var shown_partial: String = ""
+var next_visual_update_ms: int = 0
+var autonomy_enabled: bool = true
+var autonomous_next: float = 18.0
+var elapsed: float = 0.0
+var physics_accumulator: float = 0.0
+var status_accumulator: float = 0.0
+
 
 func _ready() -> void:
-    _build_scene()
-    ollama = OllamaScript.new()
-    add_child(ollama)
-    ollama.reply_received.connect(_on_ollama_answer)
-    ollama.connect("reply_delta", Callable(self, "_on_ollama_chunk"))
-    ollama.unavailable.connect(_on_ollama_error)
-    ollama.connect("inference_stats", Callable(self, "_on_ollama_stats"))
-    voice = VoiceScript.new()
-    add_child(voice)
-    voice.transcript_ready.connect(_on_transcript)
-    voice.voice_error.connect(_on_voice_error)
-    voice.record_state_changed.connect(_on_recording_state)
-    _build_ui()
-    pomi.arrived.connect(_on_pomi_arrived)
-    _event("Bienvenido a la casa del primer Pomi. Haz clic en los muebles o usa los botones.")
-    _event("La simulación funciona sin IA. Ollama y Vosk son opcionales.")
-    _refresh_status()
+    var saved: Variant = memory.load_world()
+    if saved != null:
+        if not world.restore_snapshot(saved):
+            push_warning("La partida nueva no pudo restaurarse; se usará el mundo inicial.")
+    _create_room()
+    brain = BrainScript.new()
+    add_child(brain)
+    brain.partial_speech.connect(_on_partial_speech)
+    brain.finished.connect(_on_reply)
+    brain.failed.connect(_on_brain_error)
+    brain.metrics.connect(_on_metrics)
+    _create_ui()
+    _refresh_chat()
+    _refresh_debug()
+    _update_status()
 
-func _build_scene() -> void:
-    home = HouseScript.new()
-    home.name = "Vivienda_Pomi"
-    add_child(home)
-    home.build()
-    pomi = AgentScript.new()
-    pomi.name = "Pomi_01"
-    pomi.position = Vector3(-3.80, 0.0, 1.10)
-    add_child(pomi)
-    camera = Camera3D.new()
-    camera.name = "Camara_Isometrica"
+
+func _create_room() -> void:
+    var environment := WorldEnvironment.new()
+    var env := Environment.new()
+    env.background_mode = Environment.BG_COLOR
+    env.background_color = Color("#161B29")
+    env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+    env.ambient_light_color = Color.WHITE
+    environment.environment = env
+    add_child(environment)
+
+    _static_cube("Suelo", Vector3(0, -0.18, 0), Vector3(8.1, 0.30, 6.3), Color("#48506B"))
+    _static_cube("Pared norte", Vector3(0, 1.35, -3.12), Vector3(8.1, 2.7, 0.16), Color("#313B55"))
+    _static_cube("Pared izquierda", Vector3(-4.00, 1.35, 0), Vector3(0.16, 2.7, 6.3), Color("#323C58"))
+    _static_cube("Pared derecha", Vector3(4.00, 1.35, 0), Vector3(0.16, 2.7, 6.3), Color("#323C58"))
+    objects_root = Node3D.new()
+    objects_root.name = "ObjetosEditor"
+    add_child(objects_root)
+
+    avatar = MeshInstance3D.new()
+    avatar.name = "404_Cubo"
+    var body_mesh := BoxMesh.new()
+    body_mesh.size = Vector3(0.55, 0.7, 0.55)
+    avatar.mesh = body_mesh
+    avatar.material_override = _material(Color("#F1A0BA"), 0.0)
+    add_child(avatar)
+    _refresh_meshes()
+
+    var camera := Camera3D.new()
     camera.projection = Camera3D.PROJECTION_ORTHOGONAL
-    camera.size = 13.5
-    camera.position = Vector3(12, 15, 17)
+    camera.size = 9.4
+    camera.position = Vector3(8.0, 10.0, 10.0)
     add_child(camera)
-    camera.look_at(Vector3(0, 0.7, 0), Vector3.UP)
+    camera.look_at(Vector3(0, 0.6, 0))
     camera.current = true
-    var world_environment := WorldEnvironment.new()
-    var environment := Environment.new()
-    environment.background_mode = Environment.BG_COLOR
-    environment.background_color = Color("111426")
-    environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-    environment.ambient_light_color = Color.WHITE
-    environment.ambient_light_energy = 1.0
-    world_environment.environment = environment
-    add_child(world_environment)
 
-func _make_button(text_value: String, callback: Callable) -> Button:
+
+func _material(tint: Color, transmission: float) -> StandardMaterial3D:
+    var mat := StandardMaterial3D.new()
+    mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+    if transmission > 0.01:
+        mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+        tint.a = 1.0 - 0.7 * clampf(transmission, 0.0, 1.0)
+    mat.albedo_color = tint
+    return mat
+
+
+func _static_cube(label: String, where: Vector3, size: Vector3, tint: Color) -> void:
+    var mesh := MeshInstance3D.new()
+    mesh.name = label
+    var box := BoxMesh.new()
+    box.size = size
+    mesh.mesh = box
+    mesh.position = where
+    mesh.material_override = _material(tint, 0.0)
+    add_child(mesh)
+
+
+func _refresh_meshes() -> void:
+    if objects_root == null:
+        return
+    for child in objects_root.get_children():
+        child.queue_free()
+    for obj in world.objects:
+        var mesh := MeshInstance3D.new()
+        mesh.name = str(obj["id"])
+        var box := BoxMesh.new()
+        box.size = Vector3(float(obj["width"]), float(obj["height"]), float(obj["depth"]))
+        mesh.mesh = box
+        mesh.position = Vector3(float(obj["x"]), float(obj["height"]) * 0.5, float(obj["z"]))
+        mesh.material_override = _material(world.palette_color(str(obj["palette"])), float(obj["transmission"]))
+        objects_root.add_child(mesh)
+    avatar.position = world.agent_position + Vector3(0.0, 0.38, 0.0)
+
+
+func _button(label_text: String, callback: Callable) -> Button:
     var button := Button.new()
-    button.text = text_value
+    button.text = label_text
     button.pressed.connect(callback)
     return button
 
-func _build_ui() -> void:
-    var canvas := CanvasLayer.new()
-    add_child(canvas)
-    var panel := PanelContainer.new()
-    panel.set_anchors_preset(Control.PRESET_RIGHT_WIDE)
-    panel.anchor_left = 1.0
-    panel.anchor_right = 1.0
-    panel.anchor_top = 0.0
-    panel.anchor_bottom = 1.0
-    panel.offset_left = -355.0
-    panel.offset_right = -12.0
-    panel.offset_top = 12.0
-    panel.offset_bottom = -12.0
-    canvas.add_child(panel)
-    var margin := MarginContainer.new()
-    margin.add_theme_constant_override("margin_left", 14)
-    margin.add_theme_constant_override("margin_right", 14)
-    margin.add_theme_constant_override("margin_top", 14)
-    margin.add_theme_constant_override("margin_bottom", 14)
-    panel.add_child(margin)
-    var content := VBoxContainer.new()
-    content.add_theme_constant_override("separation", 8)
-    margin.add_child(content)
-    var title := Label.new()
-    title.text = "TESERACTA  |  POMI 01"
-    title.add_theme_font_size_override("font_size", 22)
-    content.add_child(title)
-    status_label = Label.new()
-    status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-    content.add_child(status_label)
-    needs_label = Label.new()
-    needs_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-    content.add_child(needs_label)
-    inventory_label = Label.new()
-    content.add_child(inventory_label)
-    content.add_child(HSeparator.new())
-    var caption := Label.new()
-    caption.text = "ACCIONES — haz clic en un mueble o elige:"
-    content.add_child(caption)
-    var action_grid := GridContainer.new()
-    action_grid.columns = 3
-    content.add_child(action_grid)
-    var options := {"Comer": "eat", "Dormir": "sleep", "Baño": "toilet", "Ducha": "shower", "Sofá": "relax"}
-    for option_name in options.keys():
-        var requested_action: String = options[option_name]
-        action_grid.add_child(_make_button(option_name, Callable(self, "_send_to_action").bind(requested_action, true)))
-    content.add_child(HSeparator.new())
-    var commands := HBoxContainer.new()
-    content.add_child(commands)
-    pause_button = _make_button("Pausar", _toggle_pause)
-    commands.add_child(pause_button)
-    commands.add_child(_make_button("Guardar", _save_game))
-    commands.add_child(_make_button("Cargar", _load_game))
-    commands.add_child(_make_button("Copia memoria", _backup_pomi_memory))
-    var event_caption := Label.new()
-    event_caption.text = "ACTIVIDAD DEL POMI"
-    content.add_child(event_caption)
-    event_view = RichTextLabel.new()
-    event_view.fit_content = false
-    event_view.scroll_following = true
-    event_view.custom_minimum_size = Vector2(0, 82)
-    content.add_child(event_view)
-    content.add_child(HSeparator.new())
-    var chat_caption := Label.new()
-    chat_caption.text = "HABLAR CON POMI (IA LOCAL OPCIONAL)"
-    content.add_child(chat_caption)
-    log_view = RichTextLabel.new()
-    log_view.fit_content = false
-    log_view.scroll_following = true
-    log_view.size_flags_vertical = Control.SIZE_EXPAND_FILL
-    log_view.custom_minimum_size = Vector2(0, 135)
-    content.add_child(log_view)
-    chat_input = LineEdit.new()
-    chat_input.placeholder_text = "Escríbele algo al Pomi..."
-    chat_input.text_submitted.connect(_send_chat)
-    content.add_child(chat_input)
-    queue_status_label = Label.new()
-    queue_status_label.text = ""
-    queue_status_label.add_theme_font_size_override("font_size", 11)
-    content.add_child(queue_status_label)
-    var chat_buttons := HBoxContainer.new()
-    content.add_child(chat_buttons)
-    chat_buttons.add_child(_make_button("Enviar", func(): _send_chat(chat_input.text)))
-    mic_button = _make_button("Grabar voz", func(): voice.toggle_recording())
-    chat_buttons.add_child(mic_button)
-    var hint := Label.new()
-    hint.text = "IA: Ollama 127.0.0.1:11434 | Voz: Vosk 127.0.0.1:8765\nClic izquierdo: mobiliario · Rueda: zoom"
-    hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-    hint.add_theme_font_size_override("font_size", 11)
-    content.add_child(hint)
+
+func _label(parent: Node, content: String) -> Label:
+    var item := Label.new()
+    item.text = content
+    item.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    parent.add_child(item)
+    return item
+
+
+func _tab(tabs: TabContainer, title: String) -> VBoxContainer:
+    var root := VBoxContainer.new()
+    root.name = title
+    root.add_theme_constant_override("separation", 7)
+    tabs.add_child(root)
+    return root
+
+
+func _create_ui() -> void:
+    var layer := CanvasLayer.new()
+    add_child(layer)
+    var sidebar := PanelContainer.new()
+    sidebar.anchor_left = 1.0
+    sidebar.anchor_right = 1.0
+    sidebar.anchor_top = 0.0
+    sidebar.anchor_bottom = 1.0
+    sidebar.offset_left = -468
+    sidebar.offset_right = -10
+    sidebar.offset_top = 10
+    sidebar.offset_bottom = -10
+    var background := StyleBoxFlat.new()
+    background.bg_color = Color("#192033")
+    background.border_color = Color("#64718B")
+    background.border_width_left = 1
+    sidebar.add_theme_stylebox_override("panel", background)
+    layer.add_child(sidebar)
+
+    var margins := MarginContainer.new()
+    for side in ["left", "right", "top", "bottom"]:
+        margins.add_theme_constant_override("margin_" + side, 10)
+    sidebar.add_child(margins)
+
+    var layout := VBoxContainer.new()
+    margins.add_child(layout)
+    _label(layout, "TESERACTA · ZERO | 404-CUBO")
+    status_line = _label(layout, "")
+    var tabs := TabContainer.new()
+    tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    layout.add_child(tabs)
+
+    _build_chat_tab(_tab(tabs, "Chat"))
+    _build_editor_tab(_tab(tabs, "Editor"))
+    _build_agent_tab(_tab(tabs, "Agente"))
+    _build_memory_tab(_tab(tabs, "Memoria"))
+    _build_debug_tab(_tab(tabs, "Registro"))
+
+
+func _build_chat_tab(root: VBoxContainer) -> void:
+    _label(root, "Las frases no ejecutan acciones: 404 envía comandos aparte.")
+    dialogue = RichTextLabel.new()
+    dialogue.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    dialogue.scroll_following = true
+    root.add_child(dialogue)
+
+    message_input = LineEdit.new()
+    message_input.placeholder_text = "Hablar con 404..."
+    message_input.text_submitted.connect(_send_message)
+    root.add_child(message_input)
+    var buttons := HBoxContainer.new()
+    root.add_child(buttons)
+    buttons.add_child(_button("Enviar", func(): _send_message(message_input.text)))
+    buttons.add_child(_button("Observar / decidir", _request_autonomous))
+    buttons.add_child(_button("Detener", _ask_stop))
+
+
+func _editor_number(parent: VBoxContainer, key: String, title: String, low: float, high: float, step: float) -> void:
+    var line := HBoxContainer.new()
+    parent.add_child(line)
+    var name_label := _label(line, title)
+    name_label.custom_minimum_size.x = 160
+    var field := SpinBox.new()
+    field.min_value = low
+    field.max_value = high
+    field.step = step
+    field.allow_greater = false
+    field.allow_lesser = false
+    field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    line.add_child(field)
+    editor_numbers[key] = field
+
+
+func _build_editor_tab(root: VBoxContainer) -> void:
+    _label(root, "Editor inicial: cubos con parámetros. Paredes fijas en esta versión.")
+    var choice_row := HBoxContainer.new()
+    root.add_child(choice_row)
+    editor_choice = OptionButton.new()
+    editor_choice.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    editor_choice.item_selected.connect(_on_object_selected)
+    choice_row.add_child(editor_choice)
+    choice_row.add_child(_button("+ Cubo", _editor_add_box))
+    choice_row.add_child(_button("Eliminar", _editor_delete_box))
+
+    var scroll := ScrollContainer.new()
+    scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+    root.add_child(scroll)
+    var fields := VBoxContainer.new()
+    fields.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    scroll.add_child(fields)
+
+    _label(fields, "Nombre del objeto")
+    editor_name = LineEdit.new()
+    fields.add_child(editor_name)
+    _editor_number(fields, "x", "Posición X", -3.4, 3.4, 0.1)
+    _editor_number(fields, "z", "Posición Z", -2.4, 2.4, 0.1)
+    _editor_number(fields, "width", "Anchura", 0.15, 3.0, 0.05)
+    _editor_number(fields, "height", "Altura", 0.15, 2.5, 0.05)
+    _editor_number(fields, "depth", "Profundidad", 0.15, 3.0, 0.05)
+
+    _label(fields, "Familia de paleta cromática (variantes tonales después)")
+    palette_choice = OptionButton.new()
+    fields.add_child(palette_choice)
+    for color in WorldScript.PALETTES.keys():
+        palette_choice.add_item(str(color))
+
+    _label(fields, "Material sensorial")
+    material_choice = OptionButton.new()
+    fields.add_child(material_choice)
+    for kind in WorldScript.MATERIALS:
+        material_choice.add_item(kind)
+    _editor_number(fields, "roughness", "Rugosidad", 0.0, 1.0, 0.05)
+    _editor_number(fields, "transmission", "Transparencia", 0.0, 1.0, 0.05)
+    _editor_number(fields, "temperature_c", "Temperatura °C", -50.0, 150.0, 1.0)
+
+    var actions := HBoxContainer.new()
+    root.add_child(actions)
+    actions.add_child(_button("Aplicar cambios", _editor_apply))
+    actions.add_child(_button("Guardar mundo", _save_world))
+    actions.add_child(_button("Restablecer mundo", _reset_world))
+    _refresh_object_choices()
+
+
+func _build_agent_tab(root: VBoxContainer) -> void:
+    _label(root, "Prompt inicial editable (archivo NUEVO, sin biografía anterior).")
+    prompt_edit = TextEdit.new()
+    prompt_edit.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    prompt_edit.text = memory.prompt
+    root.add_child(prompt_edit)
+    root.add_child(_button("Guardar prompt", _save_prompt))
+    _label(root, "Modelo de Ollama")
+    model_input = LineEdit.new()
+    model_input.text = memory.model
+    root.add_child(model_input)
+    root.add_child(_button("Guardar modelo", _save_model))
+    autonomy_button = _button("Pausar iniciativa", _toggle_autonomy)
+    root.add_child(autonomy_button)
+
+
+func _build_memory_tab(root: VBoxContainer) -> void:
+    _label(root, "Memorias NUEVAS en JSON editable. Nunca importamos el diario anterior.")
+    memory_edit = TextEdit.new()
+    memory_edit.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    memory_edit.text = memory.memory_json()
+    root.add_child(memory_edit)
+    var actions := HBoxContainer.new()
+    root.add_child(actions)
+    actions.add_child(_button("Recargar", _reload_memory_editor))
+    actions.add_child(_button("Guardar edición", _save_memory_editor))
+    actions.add_child(_button("Vaciar", _confirm_clear_memory))
+    confirm_clear = ConfirmationDialog.new()
+    confirm_clear.dialog_text = "¿Borrar todas las NUEVAS memorias de 404 de Teseracta ZERO?"
+    confirm_clear.confirmed.connect(_clear_new_memory)
+    add_child(confirm_clear)
+
+
+func _build_debug_tab(root: VBoxContainer) -> void:
+    _label(root, "Resultados físicos verificados, propuestas y notas declaradas del modelo. No son pensamientos ocultos.")
+    debug_display = RichTextLabel.new()
+    debug_display.scroll_following = true
+    debug_display.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    root.add_child(debug_display)
+    root.add_child(_button("Actualizar registro", _refresh_debug))
+
+
+func _select_option(choice: OptionButton, value: String) -> void:
+    for i in range(choice.item_count):
+        if choice.get_item_text(i) == value:
+            choice.select(i)
+            return
+
+
+func _refresh_object_choices() -> void:
+    if editor_choice == null:
+        return
+    var wanted: int = editor_choice.selected
+    editor_choice.clear()
+    for obj in world.objects:
+        editor_choice.add_item("%s [%s]" % [str(obj["name"]), str(obj["id"])])
+    if world.objects.is_empty():
+        return
+    editor_choice.select(clampi(wanted, 0, world.objects.size() - 1))
+    _on_object_selected(editor_choice.selected)
+
+
+func _on_object_selected(index: int) -> void:
+    if index < 0 or index >= world.objects.size():
+        return
+    var obj: Dictionary = world.objects[index]
+    editor_name.text = str(obj["name"])
+    for key in editor_numbers:
+        var spin: SpinBox = editor_numbers[key]
+        spin.value = float(obj[key])
+    _select_option(palette_choice, str(obj["palette"]))
+    _select_option(material_choice, str(obj["material"]))
+
+
+func _editor_apply() -> void:
+    var index: int = editor_choice.selected
+    if index < 0:
+        return
+    var update: Dictionary = {"name": editor_name.text.strip_edges()}
+    for key in editor_numbers:
+        var spin: SpinBox = editor_numbers[key]
+        update[key] = spin.value
+    update["palette"] = palette_choice.get_item_text(palette_choice.selected)
+    update["material"] = material_choice.get_item_text(material_choice.selected)
+    if not world.update_box(index, update):
+        _debug("Editor: datos no válidos.")
+        return
+    _refresh_meshes()
+    _save_world()
+    _refresh_object_choices()
+    _drain_world_events()
+
+
+func _editor_add_box() -> void:
+    world.add_box()
+    _refresh_meshes()
+    _refresh_object_choices()
+    editor_choice.select(world.objects.size() - 1)
+    _on_object_selected(editor_choice.selected)
+    _save_world()
+    _drain_world_events()
+
+
+func _editor_delete_box() -> void:
+    world.remove_box(editor_choice.selected)
+    _refresh_meshes()
+    _refresh_object_choices()
+    _save_world()
+    _drain_world_events()
+
+
+func _save_world() -> void:
+    _debug("Mundo guardado." if memory.save_world(world.snapshot()) else "No se pudo guardar el mundo.")
+
+
+func _reset_world() -> void:
+    world.reset()
+    _refresh_meshes()
+    _refresh_object_choices()
+    _save_world()
+    _debug("Mundo ZERO restablecido. No se ha borrado la memoria.")
+
+
+func _save_prompt() -> void:
+    _debug("Prompt guardado." if memory.save_prompt(prompt_edit.text) else "Prompt vacío o no se pudo guardar.")
+
+
+func _save_model() -> void:
+    _debug("Modelo guardado." if memory.save_model(model_input.text) else "Modelo inválido.")
+
+
+func _toggle_autonomy() -> void:
+    autonomy_enabled = not autonomy_enabled
+    autonomy_button.text = "Pausar iniciativa" if autonomy_enabled else "Reanudar iniciativa"
+    autonomous_next = elapsed + 10.0
+    _update_status()
+
+
+func _reload_memory_editor() -> void:
+    memory_edit.text = memory.memory_json()
+
+
+func _save_memory_editor() -> void:
+    _debug("Memorias editadas y guardadas." if memory.replace_edited_memories(memory_edit.text) else "JSON de memoria inválido: no se ha guardado.")
+
+
+func _confirm_clear_memory() -> void:
+    confirm_clear.popup_centered()
+
+
+func _clear_new_memory() -> void:
+    if memory.clear_memory():
+        memory_edit.text = memory.memory_json()
+        _debug("Memorias NUEVAS de 404 borradas.")
+        _refresh_chat()
+
+
+func _debug(text: String) -> void:
+    debug_lines.append(text)
+    if debug_lines.size() > 80:
+        debug_lines.pop_front()
+    _refresh_debug()
+
+
+func _refresh_debug() -> void:
+    if debug_display == null:
+        return
+    var content: PackedStringArray = []
+    for event in memory.recent_verified_events(25):
+        content.append("[MUNDO tick %s / %s] %s" % [
+            str(event.get("tick", "?")), str(event.get("kind", "?")), str(event.get("detail", ""))
+        ])
+    for entry in memory.entries:
+        if str(entry.get("kind", "")) == "reflection":
+            content.append("[REFLEXIÓN DECLARADA] " + str(entry.get("text", "")))
+    for line in debug_lines:
+        content.append("[SISTEMA] " + line)
+    debug_display.text = "\n\n".join(content)
+
+
+func _refresh_chat() -> void:
+    if dialogue == null:
+        return
+    var lines: PackedStringArray = []
+    var starting: int = maxi(0, memory.entries.size() - 40)
+    for i in range(starting, memory.entries.size()):
+        var entry: Dictionary = memory.entries[i]
+        var kind: String = str(entry.get("kind", ""))
+        if kind == "user":
+            lines.append("Tú: " + str(entry.get("text", "")))
+        elif kind == "agent":
+            lines.append("404: " + str(entry.get("text", "")))
+    if not shown_partial.is_empty():
+        lines.append("404: " + shown_partial)
+    dialogue.text = "\n\n".join(lines)
+
+
+func _send_message(content: String) -> void:
+    var cleaned: String = content.strip_edges()
+    if cleaned.is_empty():
+        return
+    message_input.clear()
+    memory.record("user", cleaned)
+    _refresh_chat()
+    queued_messages.append(cleaned)
+    if brain.pending and brain.cancel_autonomous():
+        shown_partial = ""
+        partial_speech = ""
+        _refresh_chat()
+        _debug("Deliberación autónoma cancelada para atender al usuario.")
+    _send_next_if_possible()
+
+
+func _send_next_if_possible() -> void:
+    if brain.pending or queued_messages.is_empty():
+        return
+    var content: String = queued_messages[0]
+    if _begin_request(content, false):
+        queued_messages.pop_front()
+
+
+func _begin_request(message: String, autonomous: bool) -> bool:
+    if brain.pending:
+        return false
+    var history: Array[Dictionary] = memory.dialogue_history(8)
+    if not autonomous and not history.is_empty():
+        if str(history[-1].get("role", "")) == "user" and str(history[-1].get("content", "")) == message.substr(0, 400):
+            history.pop_back()
+    var started: bool = brain.request(memory.prompt, memory.model, world.action_api(), world.observe(), history, memory.recent_verified_events(5), message, autonomous)
+    if started:
+        autonomous_next = elapsed + 35.0
+    return started
+
+
+func _request_autonomous() -> void:
+    _begin_request("", true)
+
+
+func _ask_stop() -> void:
+    # Botón de control de depuración humano, distinto de una decisión de 404.
+    var outcome: Dictionary = world.submit_action({"type": "Stop", "data": {}})
+    _debug("Orden externa de parar: " + str(outcome.get("message", "")))
+    _drain_world_events()
+
+
+func _on_partial_speech(text: String) -> void:
+    partial_speech = text
+    if next_visual_update_ms == 0:
+        next_visual_update_ms = Time.get_ticks_msec() + 650
+
+
+func _on_reply(result: Dictionary) -> void:
+    partial_speech = ""
+    shown_partial = ""
+    next_visual_update_ms = 0
+    var words: String = str(result.get("speech", "")).strip_edges()
+    var note: String = str(result.get("reflection", "")).strip_edges()
+    if not words.is_empty():
+        memory.record("agent", words)
+    if not note.is_empty():
+        memory.record("reflection", note)
+    _refresh_chat()
+    var action: Variant = result.get("action", {"type": "Wait", "data": {}})
+    if action is Dictionary:
+        _debug("404 propuso: " + JSON.stringify(action))
+        var verdict: Dictionary = world.submit_action(action)
+        _debug("Respuesta del mundo: " + str(verdict.get("message", "")))
+        _drain_world_events()
+    _send_next_if_possible()
+
+
+func _on_brain_error(reason: String) -> void:
+    partial_speech = ""
+    shown_partial = ""
+    next_visual_update_ms = 0
+    _refresh_chat()
+    _debug("Error del modelo: " + reason)
+    autonomous_next = elapsed + 35.0
+
+
+func _on_metrics(details: String) -> void:
+    _debug("Inferencia: " + details)
+
+
+func _drain_world_events() -> void:
+    for item in world.drain_events():
+        memory.record_event(item)
+    _refresh_debug()
+
+
+func _physics_process(delta: float) -> void:
+    physics_accumulator += delta
+    while physics_accumulator >= 0.1:
+        world.step(0.1)
+        physics_accumulator -= 0.1
+    if avatar != null:
+        avatar.position = world.agent_position + Vector3(0.0, 0.38, 0.0)
+    _drain_world_events()
+
 
 func _process(delta: float) -> void:
-    state.tick(delta)
-    if state.paused:
+    elapsed += delta
+    status_accumulator += delta
+    if status_accumulator >= 0.5:
+        status_accumulator = 0.0
+        _update_status()
+    if not partial_speech.is_empty() and Time.get_ticks_msec() >= next_visual_update_ms:
+        if partial_speech != shown_partial:
+            shown_partial = partial_speech
+            _refresh_chat()
+        next_visual_update_ms = Time.get_ticks_msec() + 650
+    if not brain.pending:
+        if not queued_messages.is_empty():
+            _send_next_if_possible()
+        elif autonomy_enabled and elapsed >= autonomous_next:
+            if not _begin_request("", true):
+                autonomous_next = elapsed + 35.0
+
+
+func _update_status() -> void:
+    if status_line == null:
         return
-    if not busy_action.is_empty() and not pomi.moving:
-        dwell_time -= delta
-        if dwell_time <= 0.0:
-            var action_result: String = state.execute_action(busy_action)
-            _event("[Acción verificada] " + action_result)
-            journal.record("world_event", action_result, state.day_index(), state.clock_text())
-            busy_action = ""
-            idle_time = 3.5
-    elif busy_action.is_empty() and not pomi.moving:
-        idle_time -= delta
-        if idle_time <= 0.0:
-            _send_to_action(state.propose_action(), false)
-            idle_time = 7.0
-    hud_timer -= delta
-    if hud_timer <= 0.0:
-        _refresh_status()
-        hud_timer = 0.35
-
-func _send_to_action(action_name: String, manual: bool) -> void:
-    if not home.interactables.has(action_name):
-        return
-    if action_name == "eat" and int(state.inventory["food"]) < 1:
-        _event("No queda comida. La simulación no puede inventar recursos.")
-        return
-    if action_name == "shower" and int(state.inventory["water"]) < 1:
-        _event("No queda agua.")
-        return
-    var target: Vector3 = home.interactables[action_name]["approach"]
-    if not pomi.request_walk(target, action_name):
-        _event("Pomi no encontró camino hasta ese mueble.")
-        return
-    busy_action = action_name
-    dwell_time = 999.0 # se empieza a contar al llegar
-    if manual:
-        _event("Has pedido al Pomi: " + str(home.interactables[action_name]["title"]))
-
-func _on_pomi_arrived() -> void:
-    if not busy_action.is_empty():
-        dwell_time = 3.0 if busy_action != "sleep" else 5.0
-
-func _refresh_status() -> void:
-    if status_label == null:
-        return
-    status_label.text = "Día %d · %s · %s | Estado de ánimo %d%%" % [state.day_index(), state.clock_text(), "PAUSA" if state.paused else "VIVO", roundi(state.mood())]
-    var names := {"hunger": "Saciedad", "energy": "Energía", "bladder": "Vejiga", "hygiene": "Higiene", "fun": "Diversión"}
-    var parts := PackedStringArray()
-    for key in SimScript.NEED_KEYS:
-        parts.append("%s %d%%" % [names[key], roundi(float(state.needs[key]))])
-    needs_label.text = " · ".join(parts)
-    inventory_label.text = "Nevera %s | Agua %s | Créditos %s" % [state.inventory["food"], state.inventory["water"], state.inventory["credits"]]
-
-func _log(message: String) -> void:
-    if log_view:
-        # add_text no interpreta etiquetas BBCode escritas por el jugador o el modelo.
-        log_view.add_text(message + "\n")
-
-
-func _event(message: String) -> void:
-    if event_view:
-        event_view.add_text(message + "\n")
-
-func _send_chat(text_value: String) -> void:
-    var text_message := text_value.strip_edges()
-    if text_message.is_empty():
-        return
-    chat_input.clear()
-    state.remember("El jugador dijo: " + text_message.substr(0, 70))
-    journal.record("player_utterance", text_message, state.day_index(), state.clock_text())
-    # No intercalar un nuevo mensaje entre fragmentos de la respuesta que aún se dibuja.
-    if bool(ollama.get("pending")):
-        queued_chat_messages.append(text_message)
-        _update_queue_status()
-        return
-    _log("Tú: " + text_message)
-    _request_pomi_reply(text_message)
-
-
-func _request_pomi_reply(text_message: String) -> void:
-    # Diferenciar sucesos registrados de diálogos: algo dicho por el jugador no es
-    # automáticamente un hecho verdadero, aunque se haya almacenado en el historial.
-    var events: Array[String] = []
-    for record in state.history:
-        var event_text: String = str(record)
-        if event_text.contains("El jugador dijo:") or event_text.contains("Pomi respondió al jugador:"):
-            continue
-        events.append(event_text)
-    var recent_events: Array[String] = events.slice(maxi(0, events.size() - 5), events.size())
-    var current_room := "cocina y salón"
-    if pomi.position.x < -2.0:
-        current_room = "dormitorio"
-    elif pomi.position.x > 2.0:
-        current_room = "baño"
-    var current_activity := "caminando hacia %s" % busy_action if pomi.moving else "sin desplazamiento"
-    var facts: Dictionary = {
-        "nombre": "Pomi 01",
-        "vivienda": "Casa piloto en Teseracta",
-        "habitacion_actual": current_room,
-        "actividad_actual_observable": current_activity,
-        "día": state.day_index(),
-        "hora": state.clock_text(),
-        "necesidades": state.needs.duplicate(true),
-        "comida_disponible": state.inventory["food"],
-        "agua_disponible": state.inventory["water"],
-        "acontecimientos_verificados_recientes": recent_events
-    }
-    facts["memoria_autobiografica_recuperada"] = journal.recall(text_message, 8)
-    chat_stream_started = false
-    ollama.ask(text_message, facts)
-
-
-func _on_ollama_chunk(delta_text: String) -> void:
-    if log_view == null:
-        return
-    if not chat_stream_started:
-        log_view.add_text("Pomi: ")
-        chat_stream_started = true
-    log_view.add_text(delta_text)
-
-
-func _on_ollama_answer(text_value: String) -> void:
-    if chat_stream_started:
-        log_view.add_text("\n")
-    else:
-        _log("Pomi: " + text_value)
-    chat_stream_started = false
-    state.remember("Pomi respondió al jugador: " + text_value.substr(0, 70))
-    journal.record("pomi_utterance", text_value, state.day_index(), state.clock_text())
-    call_deferred("_dispatch_queued_chat")
-
-
-func _on_ollama_error(reason: String) -> void:
-    if chat_stream_started and log_view:
-        log_view.add_text("\n")
-    chat_stream_started = false
-    _log("[IA no disponible] " + reason)
-    call_deferred("_dispatch_queued_chat")
-
-
-func _dispatch_queued_chat() -> void:
-    if not queued_chat_messages.is_empty() and not bool(ollama.get("pending")):
-        var next_message: String = queued_chat_messages.pop_front()
-        _update_queue_status()
-        _log("Tú: " + next_message)
-        _request_pomi_reply(next_message)
-
-
-func _update_queue_status() -> void:
-    if queue_status_label == null:
-        return
-    if queued_chat_messages.is_empty():
-        queue_status_label.text = ""
-    else:
-        queue_status_label.text = "%d mensaje(s) recibido(s) y pendiente(s) de respuesta" % queued_chat_messages.size()
-
-
-func _on_ollama_stats(info: String) -> void:
-    _event("[Diagnóstico] " + info)
-
-
-func _on_transcript(text_value: String) -> void:
-    _send_chat(text_value)
-
-func _on_voice_error(reason: String) -> void:
-    _event("[Micrófono] " + reason)
-
-func _on_recording_state(active: bool) -> void:
-    mic_button.text = "Detener" if active else "Grabar voz"
-
-func _toggle_pause() -> void:
-    state.paused = not state.paused
-    pomi.set_process(not state.paused)
-    pause_button.text = "Reanudar" if state.paused else "Pausar"
-    _refresh_status()
-
-func _backup_pomi_memory() -> void:
-    var location: String = journal.backup()
-    if location.is_empty():
-        _event("Aun no hay recuerdos registrados, o fallo el respaldo del diario.")
-        return
-    _event("Copia de la memoria creada en: " + location)
-
-
-func _save_game() -> void:
-    var data := state.as_dict()
-    data["journal_active"] = true
-    data["pomi_position"] = [pomi.position.x, pomi.position.y, pomi.position.z]
-    data["conversation"] = ollama.export_history()
-    var file := FileAccess.open("user://teseracta_save_v1.json", FileAccess.WRITE)
-    if file == null:
-        _event("Error de guardado: %s" % FileAccess.get_open_error())
-        return
-    file.store_string(JSON.stringify(data, "  "))
-    file.close()
-    _event("Partida guardada en user://teseracta_save_v1.json")
-
-func _load_game() -> void:
-    var file := FileAccess.open("user://teseracta_save_v1.json", FileAccess.READ)
-    if file == null:
-        _event("No se encontró ninguna partida guardada.")
-        return
-    var data: Variant = JSON.parse_string(file.get_as_text())
-    if not (data is Dictionary) or not state.load_dict(data):
-        _event("El guardado no es válido o no es compatible.")
-        return
-    pomi.restore_position(data.get("pomi_position", []))
-    ollama.load_history(data.get("conversation", []))
-    if not bool(data.get("journal_active", false)):
-        journal.import_legacy_conversation(data.get("conversation", []), state.day_index(), state.clock_text())
-    busy_action = ""
-    idle_time = 4.0
-    _refresh_status()
-    _event("Partida cargada correctamente.")
-
-func _unhandled_input(event: InputEvent) -> void:
-    if event is InputEventMouseButton and event.pressed:
-        if event.button_index == MOUSE_BUTTON_WHEEL_UP:
-            camera.size = maxf(7, camera.size - 0.8)
-        elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-            camera.size = minf(25, camera.size + 0.8)
-        elif event.button_index == MOUSE_BUTTON_LEFT:
-            var from: Vector3 = camera.project_ray_origin(event.position)
-            var to: Vector3 = from + camera.project_ray_normal(event.position) * 100.0
-            var query := PhysicsRayQueryParameters3D.create(from, to)
-            query.collision_mask = 2
-            query.collide_with_areas = true
-            query.collide_with_bodies = false
-            var result: Dictionary = get_world_3d().direct_space_state.intersect_ray(query)
-            if not result.is_empty():
-                var item: Object = result.get("collider")
-                if item != null and item.has_meta("action"):
-                    _send_to_action(str(item.get_meta("action")), true)
+    var model_status: String = "procesando %.0f s" % brain.elapsed_seconds() if brain != null and brain.pending else "disponible"
+    status_line.text = "Tick %d · 404 (%.2f, %.2f) · %s\n%s · autonomía %s" % [
+        world.ticks, world.agent_position.x, world.agent_position.z,
+        "caminando" if world.moving else "parado", model_status,
+        "activa" if autonomy_enabled else "pausada"
+    ]

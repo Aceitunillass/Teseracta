@@ -1,6 +1,0 @@
-{
-    "model": "qwen3.5:2b",
-    "autonomy_interval_seconds":  55,
-    "request_timeout_seconds":  90,
-    "context_window":  3072
-}

@@ -1,43 +1,56 @@
-# Arquitectura técnica — Prototipo 0.1.0
+# TESERACTA ZERO — arquitectura inicial
 
-```text
-                  ┌─────────────────────────────────────────┐
-Jugador ──────────► Main / UI: clic, teclado, chat, micrófono │
-                  └──────────────┬──────────────────────────┘
-                                 │
-            ┌────────────────────┼───────────────────────────┐
-            ▼                    ▼                           ▼
-     [Simulation State]    [Pomi Agent / A*]          [House / objetos]
-      reloj + necesidades   movimiento 3D            3 estancias + colisiones
-      + recursos + reglas
-            ▲
-            │ datos verificados, no órdenes generativas
-            │
-     [Ollama bridge] ◄── texto usuario
-     (127.0.0.1:11434)
-            ▲
-        texto transcrito
-            ▲
-      [Vosk bridge] ◄── WAV grabado en Godot
-      (127.0.0.1:8765)
-```
+Versión experimental reiniciada desde cero. El antiguo código y los recursos visuales NO forman parte del árbol actual. No se importa ningún recuerdo ni identidad anterior. El historial Git previo puede seguir accesible por ser el mismo repositorio; esto no equivale a borrar el repositorio de GitHub.
 
-## Propiedad y restricciones
+## Referencias investigadas
 
-`SimState.execute_action` es el único punto que cambia necesidades y reduce inventarios por acción. `OllamaBridge` no recibe referencia al objeto `SimState` ni sus métodos mutables: solo un diccionario reducido de hechos. Las conversaciones no pueden inventar recursos ni acciones ejecutadas.
+- [Clawblox / Eko](https://github.com/nacloos/clawblox): mundo independiente con protocolo api.md, join, observe, input, acciones MoveTo y Stop, registros y snapshots. En este primer vertical slice copiamos la separación conceptual, no el motor, ni sus scripts, ni desplegamos todavía su servidor HTTP. Nuestra interfaz local es world.action_api(), world.observe(), world.submit_action().
+- [AI Town](https://github.com/a16z-infra/ai-town): agentes con estado individual y simulación compartida.
+- [Concordia](https://github.com/google-deepmind/concordia): separación de agentes y árbitro del mundo.
+- [Generative Agents](https://github.com/joonspk-research/generative_agents): recuerdos y contexto episódico; ningún aprendizaje cognitivo complejo se ha implementado todavía.
 
-`PomiAgent` produce navegación y señal `arrived`. `Main` valida la interacción y espera antes de llamar `SimState.execute_action`. Las paredes visuales son independientes de reglas de paso (celdas bloqueadas de A*). En un futuro se unificará la ocupación de celdas con colliders y decoraciones, y se implementará navegación alrededor de muebles.
+## Módulos
 
-`House` crea mallas de cubos con `BaseMaterial3D.SHADING_MODE_UNSHADED`. El avatar importa `Pomi_Base_V05_Canonico.glb` con el mismo shading y filtro nearest. Actualmente el atlas original puede incluir tonos pintados que serán sustituidos en V06.
+1. scripts/world.gd: autoridad física independiente del LLM. Simulación fija por ticks de 100 ms; objetos, sensores de proximidad y acciones verificadas. Sin locomoción guionizada por necesidades.
+2. scripts/brain.gd: cliente Ollama local asíncrono; recibe una observación y propone a lo sumo una acción en cada inferencia. Streaming visual del campo speech. El motor debe aceptar o rechazar cada acción.
+3. scripts/memory.gd: nueva carpeta de usuario exclusiva user://teseracta_zero/; prompt editable, memoria editable, eventos físicos en registro independiente y nuevo estado del mundo. No consulta rutas V1/V2.
+4. scripts/main.gd: render 3D low-poly y UI. Editor de objetos por cubos, prompt, modelo, recuerdos, conversación y depuración. La UI no decide las acciones del agente.
+5. Pruebas CI: estructura con Python, importación real y arranque corto en Godot 4.7.2 con la compilación oficial verificada.
 
-### Persistencia
+## Interacción del modelo
 
-JSON `save_version=1`; archivo `user://teseracta_save_v1.json` almacena reloj, necesidades, inventario, recuerdos de eventos, contador, posición y turnos de chat. En siguiente hito añadir guardado atómico, checksums, migraciones y copias de seguridad.
+Modelo local configurable, por defecto qwen3:1.7b. El agente lee action_api, observe, recuerdos seleccionados y eventos verificables. Propone un comando de tipo y datos:
 
-### Voz
+- MoveTo: position=[x,z]; Godot comprueba límites y posición final libre; la trayectoria recta todavía no esquiva obstáculos intermedios.
+- Stop: cancela movimiento.
+- Inspect: id=obj_1; se limita a objetos en rango.
+- Use: id=food; exige proximidad; en ZERO no existe metabolismo.
+- Wait: sin acción corporal.
 
-Godot registra PCM con `AudioStreamMicrophone` y `AudioEffectRecord`, escribe temporalmente WAV, envía bytes vía `HTTPRequest.request_raw` al servidor Python de Vosk con escucha solo `127.0.0.1`. El servidor convierte WAV a PCM 16kHz mono antes de inferir. El audio no sale del equipo. Requiere habilitar el micrófono de Windows y levantar Python manualmente.
+La IA puede encadenar decisiones en ciclos independientes, pero no se realiza inferencia por cada tick. No se asegura concurrencia generativa para varios agentes en el portátil.
 
-### Rendimiento
+## Editor de objetos
 
-Un solo agente, A* de 25x17 celdas, simulación aritmética O(1) por frame, inferencia generativa solo al enviar mensajes. No hay inferencia permanente, backend remoto, ni streaming continuo de micrófono; el reconocimiento se pide por pulsación.
+Funciona dentro de Godot: añadir/borrar cubos y configurar nombre, posición, dimensiones, paleta cromática, material, rugosidad, temperatura y transmisión visual. Estado guardado en user://teseracta_zero/world.json. Paredes fijas por ahora. Estas propiedades son datos de mundo: el receptor solo ve una familia cromática simplificada; rugosidad, material y temperatura se perciben al estar cerca. Transparencia visual solo se representa gráficamente; no se rastrea contenido a través de cristal todavía.
+
+## Limitaciones honestas del MVP
+
+- Percepción espacial por distancia, sin orientación visual, raycasts/oclusiones, temperatura aparente ni aprendizaje de categorías.
+- Solo un Pomi-cubo y tres cubos editables, paredes fijas, sin animaciones ni locomoción con pathfinding.
+- Las interacciones de comida/descanso/aseo son placeholders: no hay simulación fisiológica.
+- No hay servidor HTTP compatible con Clawblox aún: se utiliza una interfaz equivalente interna en Godot.
+- Las notas reflection son declaraciones generadas por el modelo, no acceso a pensamiento oculto.
+- Las memorias manualmente editadas se marcan como tales; no sustituyen el registro separado de hechos del motor.
+- El guardado de mundo restaura objetos y posición, no hay snapshots completos de sesión de inferencia.
+- Ejecutar Godot CI verifica importación y arranque breve, no conversación real con Ollama ni la usabilidad manual del editor.
+
+## Próximas pruebas de aceptación
+
+1. Compilar Godot sin errores; abrir la escena.
+2. Añadir un cubo rosa y cambiar color, material y dimensiones; guardar y reabrir.
+3. Cambiar prompt/modelo y comprobar que persisten.
+4. Comenzar con memoria vacía; conversar y editar recuerdos con JSON válido; reiniciar.
+5. Dejar que 404 proponga MoveTo y ver eventos move_started / move_completed medidos por el motor.
+6. Solicitar Stop, Inspect, Use; probar rechazos fuera de rango.
+7. Verificar que Registro muestra acciones propuestas y reflexiones explícitas sin mezclarlas con hechos del mundo.
+8. Medir tokens por segundo antes de añadir otro agente.
