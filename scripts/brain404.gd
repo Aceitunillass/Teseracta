@@ -34,7 +34,7 @@ func _ready() -> void:
             request_timeout_seconds = clampf(float(settings.get("request_timeout_seconds", request_timeout_seconds)), 25.0, 240.0)
             context_window = clampi(int(settings.get("context_window", context_window)), 2048, 8192)
 
-func deliberate(perception: Dictionary, autobiographical_context: Array[Dictionary], trigger: String) -> bool:
+func deliberate(perception: Dictionary, autobiographical_context: Array[Dictionary], trigger: String, conversation_history: Array[Dictionary], incoming_message: String) -> bool:
     if pending:
         return false
     var prompt_text: String = ""
@@ -54,7 +54,7 @@ func deliberate(perception: Dictionary, autobiographical_context: Array[Dictiona
         })
     var direct_message: bool = trigger.begins_with("mensaje_del_interlocutor")
     var input_packet: Dictionary = {
-        "trigger": trigger,
+        "trigger": "mensaje_del_interlocutor" if direct_message else trigger,
         "interaction_type": "direct_message" if direct_message else "autonomous_deliberation",
         "speech_requirement": "Responde verbalmente a la persona en speech. No respondas solo en reflection." if direct_message else "Puedes decidir callar, hablar o actuar.",
         "world_observation": perception,
@@ -77,16 +77,33 @@ func deliberate(perception: Dictionary, autobiographical_context: Array[Dictiona
         "required": ["speech", "action", "target", "reflection"],
         "additionalProperties": false
     }
+    # Mantener el turno humano como mensaje real de Ollama, no sepultado
+    # dentro del JSON de percepción. Esto funciona mejor con modelos pequeños
+    # y evita respuestas genéricas a preguntas concretas.
+    var system_context: String = prompt_text + "\n\nESTADO ACTUAL Y RECUERDOS DISPONIBLES (no discurso de tu interlocutor):\n" + JSON.stringify(input_packet)
+    var messages: Array[Dictionary] = [{"role": "system", "content": system_context}]
+    for item in conversation_history:
+        var role: String = str(item.get("role", ""))
+        if role != "user" and role != "assistant":
+            continue
+        var line: String = str(item.get("content", "")).strip_edges()
+        if line.is_empty():
+            continue
+        messages.append({"role": role, "content": line.substr(0, 450)})
+    if direct_message:
+        # El diario ya habrá recibido el texto; no duplicarlo en la ventana.
+        if messages.size() > 1 and str(messages[-1].get("role", "")) == "user" and str(messages[-1].get("content", "")) == incoming_message.substr(0, 450):
+            messages.pop_back()
+        messages.append({"role": "user", "content": incoming_message.substr(0, 450)})
+    else:
+        messages.append({"role": "user", "content": "[Evento interno de la simulación, NO una frase del interlocutor] Oportunidad de decidir libremente si deseas hablar, actuar, inspeccionar o esperar."})
     var payload := {
         "model": model_name,
         "stream": true,
         "think": false,
         "keep_alive": "30m",
         "format": schema,
-        "messages": [
-            {"role": "system", "content": prompt_text},
-            {"role": "user", "content": JSON.stringify(input_packet)}
-        ],
+        "messages": messages,
         "options": {"num_ctx": context_window, "temperature": 0.7}
     }
     request_body = JSON.stringify(payload)
