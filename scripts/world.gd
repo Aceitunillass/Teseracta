@@ -92,12 +92,48 @@ func _distance_to(obj: Dictionary) -> float:
     return agent_position.distance_to(Vector3(float(obj["x"]), 0.0, float(obj["z"])))
 
 
+func _segment_clear(start: Vector3, finish: Vector3) -> bool:
+    # Aceptar destinos accesibles, no atravesar cubos en una trayectoria recta.
+    var count: int = maxi(1, ceili(start.distance_to(finish) / 0.12))
+    for i in range(1, count + 1):
+        var sample: Vector3 = start.lerp(finish, float(i) / float(count))
+        if not _valid_position(sample.x, sample.z):
+            return false
+    return true
+
+
+func _approach_object(obj: Dictionary) -> Variant:
+    # Convertir un ID observable a una posición libre al alcance del objeto.
+    var x: float = float(obj["x"])
+    var z: float = float(obj["z"])
+    var clearance_x: float = float(obj["width"]) * 0.5 + 0.40
+    var clearance_z: float = float(obj["depth"]) * 0.5 + 0.40
+    var candidates: Array[Vector3] = [
+        Vector3(x, 0.0, z + clearance_z),
+        Vector3(x, 0.0, z - clearance_z),
+        Vector3(x + clearance_x, 0.0, z),
+        Vector3(x - clearance_x, 0.0, z)
+    ]
+    var closest_distance: float = INF
+    var selected: Variant = null
+    for point in candidates:
+        if not _valid_position(point.x, point.z):
+            continue
+        if not _segment_clear(agent_position, point):
+            continue
+        var distance: float = agent_position.distance_to(point)
+        if distance < closest_distance:
+            selected = point
+            closest_distance = distance
+    return selected
+
+
 func action_api() -> Dictionary:
     return {
         "name": "Teseracta ZERO World Protocol",
         "version": 1,
         "actions": {
-            "MoveTo": {"position": "[x,z] en metros. Destino libre y transitable; no teletransporte."},
+            "MoveTo": {"data": {"position": "[x,z] para un punto libre", "id": "ID de objeto visible para acercarse a él (alternativa a position)"}, "rule": "Usa SOLO position O id. Con id Godot calcula un punto cercano transitable; no utiliza el objeto."},
             "Stop": {},
             "Inspect": {"id": "Identificador de un objeto visible y cercano"},
             "Use": {"id": "Identificador de un objeto al alcance (distancia <= 1.25 m)"},
@@ -152,23 +188,50 @@ func submit_action(command: Dictionary) -> Dictionary:
         _event("stop", "404 detuvo el desplazamiento." if was_moving else "404 solicitó detenerse cuando ya estaba parado.")
         return {"ok": true, "message": "Detenido."}
     if kind == "MoveTo":
-        var pos: Variant = data.get("position", [])
-        if not (pos is Array) or pos.size() != 2:
-            _event("rejected", "MoveTo rechazado: position debe ser [x,z].")
-            return {"ok": false, "message": "Formato de coordenadas incorrecto."}
-        if not ((pos[0] is float or pos[0] is int) and (pos[1] is float or pos[1] is int)):
-            _event("rejected", "MoveTo rechazado: coordenadas no numéricas.")
-            return {"ok": false, "message": "Coordenadas no numéricas."}
-        var x: float = float(pos[0])
-        var z: float = float(pos[1])
-        if not _valid_position(x, z):
-            _event("rejected", "MoveTo rechazado: posición bloqueada o fuera de la habitación.")
-            return {"ok": false, "message": "Destino bloqueado o fuera de los límites."}
-        destination = Vector3(x, 0.0, z)
+        var chosen: Vector3 = Vector3.ZERO
+        var label: String = ""
+        if data.has("position") and data.has("id"):
+            _event("rejected", "MoveTo rechazado: indicar position O id, no ambos.")
+            return {"ok": false, "message": "Elige un solo tipo de destino: position o id."}
+        if data.has("position"):
+            var pos: Variant = data["position"]
+            if not (pos is Array) or pos.size() != 2:
+                _event("rejected", "MoveTo rechazado: position debe ser [x,z].")
+                return {"ok": false, "message": "Formato incorrecto: position requiere [x,z]."}
+            if not ((pos[0] is float or pos[0] is int) and (pos[1] is float or pos[1] is int)):
+                _event("rejected", "MoveTo rechazado: coordenadas no numéricas.")
+                return {"ok": false, "message": "Coordenadas no numéricas."}
+            chosen = Vector3(float(pos[0]), 0.0, float(pos[1]))
+            if not _valid_position(chosen.x, chosen.z):
+                _event("rejected", "MoveTo rechazado: destino ocupado o fuera de los límites.")
+                return {"ok": false, "message": "Destino ocupado o fuera de la habitación."}
+            label = "punto (%.2f, %.2f)" % [chosen.x, chosen.z]
+        elif data.has("id"):
+            var object_id: String = str(data.get("id", ""))
+            var target_object: Dictionary = _find_object(object_id)
+            if target_object.is_empty():
+                _event("rejected", "MoveTo rechazado: objeto desconocido '%s'." % object_id)
+                return {"ok": false, "message": "No existe un objeto visible con ese ID."}
+            var approach: Variant = _approach_object(target_object)
+            if not (approach is Vector3):
+                _event("rejected", "MoveTo rechazado: no hay camino recto libre hacia %s." % object_id)
+                return {"ok": false, "message": "No existe una ruta recta despejada; prueba otro punto intermedio."}
+            chosen = approach
+            label = "objeto " + object_id
+        else:
+            _event("rejected", "MoveTo requiere data.position=[x,z] o data.id.")
+            return {"ok": false, "message": "Falta destino: proporciona position=[x,z] o id."}
+        if not _segment_clear(agent_position, chosen):
+            _event("rejected", "MoveTo rechazado: hay un obstáculo en el camino a %s." % label)
+            return {"ok": false, "message": "La trayectoria está bloqueada; solicita otro punto intermedio."}
+        if agent_position.distance_to(chosen) < 0.08:
+            _event("move_completed", "404 ya estaba al alcance de %s; desplazamiento 0.00 m." % label)
+            return {"ok": true, "message": "404 ya está en el destino. Puede elegir otra acción."}
+        destination = chosen
         journey_origin = agent_position
         moving = true
-        _event("move_started", "404 comenzó a caminar hacia (%.2f, %.2f)." % [x, z])
-        return {"ok": true, "message": "Movimiento aceptado. Resultado pendiente."}
+        _event("move_started", "404 empezó a caminar hacia %s, objetivo (%.2f, %.2f)." % [label, chosen.x, chosen.z])
+        return {"ok": true, "message": "Movimiento hacia %s aceptado; resultado físico pendiente." % label}
     if kind == "Inspect" or kind == "Use":
         var object_id: String = str(data.get("id", ""))
         var obj: Dictionary = _find_object(object_id)
