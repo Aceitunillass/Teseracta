@@ -186,5 +186,26 @@ class Test404Architecture(unittest.TestCase):
 
 
 
+    def test_body_can_walk_with_critical_needs_but_not_zero_health(self):
+        body = source("scripts/body404.gd")
+        room = source("scripts/main404.gd")
+        identity = source("config/identity_404_runtime.txt")
+        self.assertIn("if health <= 0.0:", body)
+        self.assertIn("return clampf(0.4 + 0.6", body)
+        self.assertIn("movimiento_posible_ahora", room)
+        self.assertIn("motivo_si_no_puede_moverse", room)
+        self.assertIn("protocolo_de_accion", room)
+        self.assertIn('if action == "use" and target == "center":', room)
+        self.assertIn('use_after_walk = target if action == "use" else ""', room)
+        self.assertIn("body.interact(should_use)", room)
+        self.assertIn('action="move"', identity)
+        self.assertIn('action="use"', identity)
+        self.assertIn("DECIR «me muevo»", identity)
+        self.assertIn("La fatiga reduce tu velocidad", identity)
+        self.assertNotIn("if satiety <= 0.0:", body)
+        self.assertNotIn("if bladder_relief <= 0.0:", body)
+
+
+
 if __name__ == "__main__":
     unittest.main()
