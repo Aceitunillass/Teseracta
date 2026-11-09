@@ -69,5 +69,25 @@ class Test404Architecture(unittest.TestCase):
         self.assertIn("no implementada", guide.lower())
 
 
+    def test_404_chat_preempts_autonomous_thought(self):
+        bridge = source("scripts/brain404.gd")
+        room = source("scripts/main404.gd")
+        self.assertIn("func cancel_autonomous_for_chat() -> bool:", bridge)
+        self.assertIn("http.cancel_request()", bridge)
+        self.assertIn('brain.call("cancel_autonomous_for_chat")', room)
+        self.assertIn('chat_retry_at = elapsed_real + 8.0', room)
+        self.assertIn('brain.call("seconds_waiting")', room)
+
+    def test_short_runtime_prompt_and_timeout(self):
+        bridge = source("scripts/brain404.gd")
+        config = json.loads(source("config/ai_404.json"))
+        canonical = source("config/identity_404.txt")
+        runtime = source("config/identity_404_runtime.txt")
+        self.assertIn('const IDENTITY := "res://config/identity_404_runtime.txt"', bridge)
+        self.assertLess(len(runtime), len(canonical))
+        self.assertLessEqual(config["request_timeout_seconds"], 100)
+        self.assertLessEqual(config["context_window"], 3072)
+
+
 if __name__ == "__main__":
     unittest.main()
