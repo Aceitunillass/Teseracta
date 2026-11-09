@@ -234,7 +234,7 @@ func _extract_partial_speech(raw_json: String) -> String:
                 raw_value += raw_json.substr(i, 6)
                 i += 6
                 continue
-            if escape_char not in ['"', "\\", "/", "b", "f", "n", "r", "t"]:
+            if not (escape_char in ['"', "\\", "/", "b", "f", "n", "r", "t"]):
                 break
             raw_value += raw_json.substr(i, 2)
             i += 2
@@ -259,7 +259,7 @@ func _finish(metadata: Dictionary) -> void:
     var decision: Dictionary = decoded
     var action: String = str(decision.get("action", "none"))
     var target: String = str(decision.get("target", "none"))
-    if action not in ["none", "move", "use", "inspect", "wait"] or target not in ["none", "food", "bed", "toilet", "center"]:
+    if not (action in ["none", "move", "use", "inspect", "wait"]) or not (target in ["none", "food", "bed", "toilet", "center"]):
         inference_failed.emit("Ministral intentó una acción o destino inexistente.")
         return
     var final_decision: Dictionary = {
