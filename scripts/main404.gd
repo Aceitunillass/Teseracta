@@ -366,6 +366,16 @@ func _observation() -> Dictionary:
         "modelo_visual": "Pomi V05; sin esqueleto articulado de manos o rostro",
         "posicion_actual": [pomi.position.x, pomi.position.y, pomi.position.z],
         "en_movimiento": moving,
+        "reloj_corporal_pausado": simulation_paused,
+        "movimiento_posible_ahora": body.movement_factor() > 0.0 and not simulation_paused,
+        "capacidad_fisica": "404 tiene un cuerpo virtual real dentro de la simulacion. Puede solicitar acciones JSON y Godot las ejecuta si son viables. Hablar o describir un gesto en speech no produce movimiento.",
+        "protocolo_de_accion": {
+            "move": "El cuerpo completo camina hasta el objetivo indicado: food, bed, toilet o center.",
+            "use": "El cuerpo camina y despues utiliza food, bed o toilet si hay condiciones validas.",
+            "inspect": "Comprueba el objetivo desde una distancia admisible.",
+            "none_wait": "Permite no realizar ninguna accion corporal voluntaria."
+        },
+        "motivo_si_no_puede_moverse": "Salud agotada (0)" if body.health <= 0.0 else ("Reloj corporal pausado: reanudar para desplazarse" if simulation_paused else "Ninguno: se permite caminar incluso con hambre, cansancio o vejiga criticos"),
         "ultimo_resultado_del_mundo": last_result,
         "registros_autobiograficos_guardados": journal.entries.size(),
         "acceso_memoria": "El diario conserva más episodios de los que caben en una inferencia; distinguir recuerdos accesibles de recuerdos existentes.",
@@ -373,7 +383,7 @@ func _observation() -> Dictionary:
         "objetos_detectados": objects,
         "sensaciones_corporales": body.observation(),
         "capacidades": ["move", "use", "inspect", "wait", "none"],
-        "limitaciones": ["no mover huesos individuales", "no simular gestos por texto", "no inventar objetos"]
+        "limitaciones": ["no articular manos, rostro o huesos individuales", "speech no ejecuta acciones: usa action y target", "no inventar objetos ni movimientos confirmados"]
     }
 
 func _start_decision(trigger: String, note: String, incoming_message: String = "") -> void:
