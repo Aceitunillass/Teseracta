@@ -249,7 +249,10 @@ func _refresh_status() -> void:
         body.energy, body.bladder_relief, body.health, body.food_units
     ]
     if bool(brain.get("pending")):
-        cognition_label.text = "Ministral está procesando una decisión."
+        var wait_seconds: float = float(brain.call("seconds_waiting"))
+        var waiting_for: String = str(brain.get("active_trigger"))
+        var task: String = "tu mensaje" if waiting_for.begins_with("mensaje_del_interlocutor") else "una decisión propia"
+        cognition_label.text = "%s: procesando %s (%.0f s). Mensajes en cola: %d" % [str(brain.get("model_name")), task, wait_seconds, queued_chat.size()]
     elif moving:
         cognition_label.text = "404 se desplaza hacia " + active_destination
     elif autonomy_enabled:
@@ -311,14 +314,22 @@ func _send_chat(message: String) -> void:
     _say("Tú: " + clean)
     journal.record("player_utterance", clean, body.day_index(), body.clock_text())
     queued_chat.append(clean)
+    if brain != null and bool(brain.get("pending")):
+        # Prioridad humana: cancelar una reflexión autónoma para poder atender el chat.
+        if bool(brain.call("cancel_autonomous_for_chat")):
+            _event("Reflexión autónoma interrumpida para atender tu mensaje.")
     if brain != null and not bool(brain.get("pending")) and not moving:
         _dispatch_chat()
 
 func _dispatch_chat() -> void:
     if queued_chat.is_empty() or bool(brain.get("pending")):
         return
-    var message: String = queued_chat.pop_front()
+    var message: String = queued_chat[0]
     _start_decision("mensaje_del_interlocutor", "La otra persona ha dicho: " + message)
+    if brain != null and bool(brain.get("pending")):
+        queued_chat.pop_front()
+    else:
+        _event("No se pudo enviar el mensaje; sigue en cola para reintentar.")
 
 func _request_observation() -> void:
     if brain != null and not bool(brain.get("pending")):
@@ -406,6 +417,7 @@ func _result(message: String) -> void:
 func _on_brain_error(message: String) -> void:
     _event("Error de inferencia: " + message)
     next_thought_at = elapsed_real + autonomy_interval
+    # Evitar un ciclo de reintentos en el mismo fotograma cuando falla la conexión.
     call_deferred("_continue_dialogue")
 
 func _on_brain_metrics(details: String) -> void:
