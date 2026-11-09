@@ -34,6 +34,13 @@ jobs:
           "$GODOT" --version
           timeout 120s "$GODOT" --headless --editor --path . --import --quit 2>&1 | tee godot-import.log
           if grep -E "SCRIPT ERROR:|Parse Error:|ERROR: Failed to load script" godot-import.log; then exit 1; fi
+      - name: Ejecutar pruebas funcionales del mundo en GDScript
+        shell: bash
+        run: |
+          set -o pipefail
+          timeout 60s "$GODOT" --headless --path . --script res://tests/world_smoke.gd 2>&1 | tee godot-smoke.log
+          grep -F "TESERACTA ZERO world smoke OK" godot-smoke.log
+          if grep -E "SCRIPT ERROR:|Parse Error:|SMOKE FAILURE:" godot-smoke.log; then exit 1; fi
       - name: Arrancar escena y comprobar errores de ejecución
         shell: bash
         run: |
