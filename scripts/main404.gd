@@ -21,6 +21,7 @@ var status_label: Label
 var cognition_label: Label
 var chat_input: LineEdit
 var autonomy_button: Button
+var simulation_pause_button: Button
 var targets: Dictionary = {
     "food": Vector3(-2.45, 0.0, -1.4),
     "bed": Vector3(0.0, 0.0, -1.4),
@@ -40,12 +41,16 @@ var refresh_at: float = 0.0
 var autosave_at: float = 35.0
 var last_result: String = "Acabas de iniciar esta version sencilla de la habitacion."
 var chat_retry_at: float = 0.0
+var simulation_paused: bool = false
 
 func _ready() -> void:
     _load_settings()
     _create_room()
     _create_pomi()
     _restore_from_disk()
+    # Evitar que un guardado crítico empeore antes de que el usuario lo atienda.
+    if body.health <= 10.0:
+        simulation_paused = true
     brain = BrainScript.new()
     add_child(brain)
     brain.connect("decision_ready", Callable(self, "_on_decision"))
@@ -55,6 +60,8 @@ func _ready() -> void:
     _event("Habitacion de 404: tres cubos y sin rutinas automaticas de actividad.")
     _event("La memoria y el guardado V1 no se modificaran ni se borraran.")
     _event("Hay %d registros en el diario autobiografico." % journal.entries.size())
+    if simulation_paused:
+        _event("PROTECCION: salud critica detectada. El tiempo corporal esta pausado hasta que decidas reanudarlo.")
     _refresh_status()
 
 func _load_settings() -> void:
@@ -202,6 +209,12 @@ func _create_interface() -> void:
     save_controls.add_child(_button("Guardar 404", _save_state))
     save_controls.add_child(_button("Cargar", _reload_state))
     save_controls.add_child(_button("Copia memoria", _backup_memory))
+    var maintenance := HBoxContainer.new()
+    contents.add_child(maintenance)
+    maintenance.add_child(_button("Reponer comida (+12)", _restock_food))
+    maintenance.add_child(_button("Cuidar a 404", _restore_404_health))
+    simulation_pause_button = _button("Reanudar tiempo" if simulation_paused else "Pausar tiempo", _toggle_simulation_pause)
+    contents.add_child(simulation_pause_button)
     autonomy_button = _button("Pausar iniciativa", _toggle_autonomy)
     contents.add_child(autonomy_button)
     var heading_events := Label.new()
@@ -245,9 +258,9 @@ func _event(message: String) -> void:
 func _refresh_status() -> void:
     if status_label == null:
         return
-    status_label.text = "Día %d · %s\nSaciedad %.0f | Energía %.0f | Vejiga %.0f | Salud %.0f\nComida restante: %d" % [
-        body.day_index(), body.clock_text(), body.satiety,
-        body.energy, body.bladder_relief, body.health, body.food_units
+    status_label.text = "Día %d · %s | %s\nSaciedad %.0f | Energía %.0f | Vejiga %.0f | Salud %.0f\nComida restante: %d" % [
+        body.day_index(), body.clock_text(), "TIEMPO PAUSADO" if simulation_paused else "EN CURSO",
+        body.satiety, body.energy, body.bladder_relief, body.health, body.food_units
     ]
     if bool(brain.get("pending")):
         var wait_seconds: float = float(brain.call("seconds_waiting"))
@@ -263,8 +276,14 @@ func _refresh_status() -> void:
 
 func _process(delta: float) -> void:
     elapsed_real += delta
-    body.tick(delta)
-    _update_walk(delta)
+    if not simulation_paused:
+        body.tick(delta)
+        _update_walk(delta)
+        if body.health <= 10.0:
+            simulation_paused = true
+            if simulation_pause_button != null:
+                simulation_pause_button.text = "Reanudar tiempo"
+            _event("PROTECCION: salud critica. Tiempo corporal pausado para permitir cuidados.")
     refresh_at -= delta
     if refresh_at <= 0.0:
         _refresh_status()
@@ -433,6 +452,33 @@ func _on_brain_error(message: String) -> void:
 func _on_brain_metrics(details: String) -> void:
     if world_log != null:
         world_log.add_text("[Inferencia] " + details + "\n")
+
+func _restock_food() -> void:
+    # Mantenimiento explícito del usuario, no una decisión voluntaria de 404.
+    body.food_units += 12
+    _result("Intervención externa verificada: se añadieron 12 raciones de alimento.")
+    _write_state(false)
+    _refresh_status()
+
+
+func _restore_404_health() -> void:
+    # El prototipo necesita herramientas de recuperación mientras desarrollamos la IA.
+    body.health = 100.0
+    body.satiety = maxf(body.satiety, 75.0)
+    body.energy = maxf(body.energy, 75.0)
+    body.bladder_relief = maxf(body.bladder_relief, 75.0)
+    _result("Intervención externa verificada: cuidados de emergencia restauraron la salud y las reservas fisiológicas de 404.")
+    _write_state(false)
+    _refresh_status()
+
+
+func _toggle_simulation_pause() -> void:
+    simulation_paused = not simulation_paused
+    if simulation_pause_button != null:
+        simulation_pause_button.text = "Reanudar tiempo" if simulation_paused else "Pausar tiempo"
+    _event("Tiempo corporal pausado." if simulation_paused else "Tiempo corporal reanudado.")
+    _refresh_status()
+
 
 func _toggle_autonomy() -> void:
     autonomy_enabled = not autonomy_enabled
