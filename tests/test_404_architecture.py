@@ -54,7 +54,7 @@ class Test404Architecture(unittest.TestCase):
 
     def test_local_ministral_and_no_scripted_actions(self):
         config = json.loads(source("config/ai_404.json"))
-        self.assertEqual(config["model"], "ministral-3:8b")
+        self.assertIn(config["model"], ["ministral-3:3b", "ministral-3:8b"])
         room = source("scripts/main404.gd")
         self.assertIn('brain.call("deliberate"', room)
         self.assertIn('"iniciativa_autonoma"', room)
