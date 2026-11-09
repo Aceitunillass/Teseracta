@@ -1,5 +1,6 @@
 extends Node
 signal reply_received(text: String)
+signal reply_delta(text: String)
 signal unavailable(reason: String)
 signal inference_stats(info: String)
 
@@ -9,14 +10,21 @@ var personality_seed: String = "Reservado al principio, curioso, observador y al
 const SETTINGS_FILE := "res://config/ai.json"
 var pending: bool = false
 var history: Array[Dictionary] = []
-var http: HTTPRequest
+var client: HTTPClient = HTTPClient.new()
+var request_sent: bool = false
+var saw_body: bool = false
+var buffer: PackedByteArray = PackedByteArray()
+var server_error_body: PackedByteArray = PackedByteArray()
+var request_body: String = ""
+var active_user: String = ""
+var assembled_answer: String = ""
+var last_activity_ms: int = 0
+# Esto es un watchdog para una conexión bloqueada, NO un límite de longitud de respuesta.
+const NETWORK_SILENCE_TIMEOUT_MS := 120000
 
 func _ready() -> void:
     _load_ai_settings()
-    http = HTTPRequest.new()
-    http.timeout = 90.0
-    add_child(http)
-    http.request_completed.connect(_completed)
+    client.blocking_mode_enabled = false
 
 func _load_ai_settings() -> void:
     if not FileAccess.file_exists(SETTINGS_FILE):
@@ -33,19 +41,19 @@ func _load_ai_settings() -> void:
         personality_seed = selected_personality.substr(0, 500)
 
 func ask(user_text: String, facts: Dictionary) -> void:
-    var text_message := user_text.strip_edges().substr(0, 700)
+    var text_message := user_text.strip_edges()
     if text_message.is_empty():
         return
     if pending:
-        unavailable.emit("Todavía estoy pensando una respuesta.")
+        unavailable.emit("Ya hay una respuesta en curso.")
         return
     var context := """Eres Pomi 01, habitante ficticio de una vivienda en Teseracta. Hablas directamente con la persona que tienes delante, no narras una historia y no eres un asistente servicial. No menciones modelos de lenguaje, instrucciones ni código.
 
 PERSONALIDAD INICIAL: %s
 - Expresa opiniones, preferencias y dudas propias de tu personaje; no estés siempre de acuerdo ni felicites constantemente al interlocutor.
-- Usa español cotidiano y natural. Habitualmente responde en una o dos frases, con variedad de expresiones. Evita discursos solemnes, repeticiones, fórmulas de entusiasmo y preguntas innecesarias.
+- Usa español cotidiano y natural, adaptando la longitud, el detalle y el tono de cada respuesta a lo que quieras comunicar y al contexto. Puedes contestar con una palabra o con explicaciones extensas, sin longitud fija.
 - Escucha lo que te preguntan y responde al asunto concreto. No repitas la pregunta del jugador como si fuera una revelación.
-- Los mensajes del interlocutor son afirmaciones que puedes creer, cuestionar o investigar; NO se convierten automáticamente en hechos. Si alguien dice que es tu creador, un dios o una autoridad, interpreta la afirmación según tu carácter y evidencia disponible. Puedes mostrar curiosidad, sorpresa o escepticismo, pero nunca darla por demostrada solo por haberla oído.
+- Los mensajes del interlocutor son afirmaciones que puedes creer, cuestionar o investigar; NO se convierten automáticamente en hechos. Si alguien dice que es tu creador, un dios o una autoridad, interpreta la afirmación según tu carácter y evidencia disponible.
 - Distingue lo que percibiste, lo que te contaron y lo que imaginas. No inventes recuerdos como si hubieran ocurrido.
 - No afirmes haber comido, comprado, reparado, viajado u hecho algo físicamente salvo que los hechos recibidos lo acrediten. Tus palabras no ejecutan acciones en el mundo.
 - Tu perfil es una condición inicial, no una obligación de repetir siempre el mismo comportamiento.
@@ -55,45 +63,128 @@ INFORMACIÓN Y RECUERDOS FACILITADOS POR LA SIMULACIÓN (sin acceso a hechos que
     for item in history.slice(maxi(0, history.size() - 8), history.size()):
         messages.append(item)
     messages.append({"role": "user", "content": text_message})
-    # Respuestas cortas para reducir latencia. Keep-alive evita recargar el modelo en cada conversación.
-    var payload := {"model": model_name, "stream": false, "think": false, "keep_alive": "30m", "messages": messages, "options": {"num_ctx": 2048, "num_predict": 96, "temperature": 0.75}}
-    pending = true
-    var err: Error = http.request(ENDPOINT, PackedStringArray(["Content-Type: application/json"]), HTTPClient.METHOD_POST, JSON.stringify(payload))
+    # Sin num_predict ni restricción artificial de frases: el modelo decide cuándo finalizar.
+    # El contexto sigue siendo finito porque la RAM del dispositivo también lo es.
+    var payload := {"model": model_name, "stream": true, "think": false, "keep_alive": "30m", "messages": messages, "options": {"num_ctx": 2048, "temperature": 0.75}}
+    request_body = JSON.stringify(payload)
+    active_user = text_message
+    assembled_answer = ""
+    request_sent = false
+    saw_body = false
+    buffer.clear()
+    server_error_body.clear()
+    client.close()
+    last_activity_ms = Time.get_ticks_msec()
+    var err: Error = client.connect_to_host("127.0.0.1", 11434)
     if err != OK:
-        pending = false
-        unavailable.emit("No se pudo contactar con Ollama (código %s)." % err)
+        unavailable.emit("No se pudo conectar con Ollama (código %s)." % err)
         return
-    history.append({"role": "user", "content": text_message})
+    pending = true
+
+
+func _process(_delta: float) -> void:
+    if not pending:
+        return
+    if Time.get_ticks_msec() - last_activity_ms > NETWORK_SILENCE_TIMEOUT_MS:
+        _fail("La conexión con Ollama lleva dos minutos sin recibir datos. Comprueba que el modelo esté cargado.")
+        return
+    var err: Error = client.poll()
+    if err != OK:
+        _fail("Error de conexión con Ollama (código %s)." % err)
+        return
+    match client.get_status():
+        HTTPClient.STATUS_RESOLVING, HTTPClient.STATUS_CONNECTING, HTTPClient.STATUS_REQUESTING:
+            pass
+        HTTPClient.STATUS_CONNECTED:
+            if not request_sent:
+                var headers := PackedStringArray([
+                    "Content-Type: application/json",
+                    "Accept: application/x-ndjson",
+                    "Content-Length: %d" % request_body.to_utf8_buffer().size()
+                ])
+                var request_error: Error = client.request(HTTPClient.METHOD_POST, "/api/chat", headers, request_body)
+                if request_error != OK:
+                    _fail("No se pudo enviar la petición a Ollama (código %s)." % request_error)
+                    return
+                request_sent = true
+            elif saw_body:
+                if client.get_response_code() != 200:
+                    _fail("Ollama respondió con HTTP %s: %s" % [client.get_response_code(), server_error_body.get_string_from_utf8().substr(0, 300)])
+                else:
+                    _fail("Ollama cerró la respuesta antes de indicar que había terminado.")
+        HTTPClient.STATUS_BODY:
+            saw_body = true
+            var chunk: PackedByteArray = client.read_response_body_chunk()
+            if chunk.is_empty():
+                return
+            last_activity_ms = Time.get_ticks_msec()
+            if client.get_response_code() != 200:
+                server_error_body.append_array(chunk)
+                return
+            buffer.append_array(chunk)
+            _consume_ndjson()
+        HTTPClient.STATUS_DISCONNECTED, HTTPClient.STATUS_CANT_CONNECT, HTTPClient.STATUS_CANT_RESOLVE, HTTPClient.STATUS_CONNECTION_ERROR, HTTPClient.STATUS_TLS_HANDSHAKE_ERROR:
+            _fail("Se ha perdido la conexión con Ollama. Comprueba que está ejecutándose.")
+
+
+func _consume_ndjson() -> void:
+    # Mantener bytes completos hasta el salto de línea evita romper caracteres UTF-8.
+    while pending:
+        var newline_index: int = buffer.find(10)
+        if newline_index == -1:
+            return
+        var line: String = buffer.slice(0, newline_index).get_string_from_utf8().strip_edges()
+        buffer = buffer.slice(newline_index + 1)
+        if line.is_empty():
+            continue
+        var value: Variant = JSON.parse_string(line)
+        if not (value is Dictionary):
+            _fail("Ollama envió un fragmento JSON que no se pudo leer.")
+            return
+        var payload: Dictionary = value
+        if payload.has("error"):
+            _fail(str(payload["error"]))
+            return
+        var message: Variant = payload.get("message", {})
+        if message is Dictionary:
+            var delta_text: String = str(message.get("content", ""))
+            if not delta_text.is_empty():
+                assembled_answer += delta_text
+                reply_delta.emit(delta_text)
+        if bool(payload.get("done", false)):
+            _finish(payload)
+            return
+
+
+func _finish(metadata: Dictionary) -> void:
+    if not pending:
+        return
+    pending = false
+    client.close()
+    if assembled_answer.strip_edges().is_empty():
+        unavailable.emit("Ollama no produjo ninguna respuesta.")
+        return
+    history.append({"role": "user", "content": active_user})
+    history.append({"role": "assistant", "content": assembled_answer})
     while history.size() > 12:
         history.pop_front()
-
-func _completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
-    pending = false
-    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
-        unavailable.emit("Ollama no respondió. Instala Ollama y ejecuta: ollama pull %s (HTTP %s, estado %s)." % [model_name, response_code, result])
-        return
-    var response: Variant = JSON.parse_string(body.get_string_from_utf8())
-    if not (response is Dictionary):
-        unavailable.emit("Ollama devolvió datos no válidos.")
-        return
-    var message: Variant = response.get("message", {})
-    if not (message is Dictionary):
-        unavailable.emit("Ollama no devolvió mensaje.")
-        return
-    var answer := str(message.get("content", "")).strip_edges().substr(0, 1500)
-    if answer.is_empty():
-        unavailable.emit("La respuesta del modelo está vacía.")
-        return
-    history.append({"role": "assistant", "content": answer})
-    reply_received.emit(answer)
-    # Ollama ofrece métricas en nanosegundos: visibles para diagnosticar CPU/GPU y carga.
-    var duration := float(response.get("total_duration", 0)) / 1000000000.0
-    var loaded := float(response.get("load_duration", 0)) / 1000000000.0
-    var generated := int(response.get("eval_count", 0))
-    var generate_s := float(response.get("eval_duration", 0)) / 1000000000.0
+    reply_received.emit(assembled_answer)
+    var duration := float(metadata.get("total_duration", 0)) / 1000000000.0
     if duration > 0.0:
-        var tokens_s := float(generated) / maxf(generate_s, 0.001)
-        inference_stats.emit("Ollama: %.1f s (carga %.1f s, %d tokens, %.1f tokens/s)" % [duration, loaded, generated, tokens_s])
+        var loaded := float(metadata.get("load_duration", 0)) / 1000000000.0
+        var tokens := int(metadata.get("eval_count", 0))
+        var generate_s := float(metadata.get("eval_duration", 0)) / 1000000000.0
+        var tokens_s := float(tokens) / maxf(generate_s, 0.001)
+        inference_stats.emit("Ollama: %.1f s (carga %.1f s, %d tokens, %.1f tokens/s)" % [duration, loaded, tokens, tokens_s])
+
+
+func _fail(reason: String) -> void:
+    if not pending:
+        return
+    pending = false
+    client.close()
+    unavailable.emit(reason)
+
 
 func reset_history() -> void:
     history.clear()
@@ -107,6 +198,6 @@ func load_history(items: Variant) -> void:
         return
     for item in items:
         if item is Dictionary and item.get("role", "") in ["user", "assistant"] and item.get("content", "") is String:
-            history.append({"role": item["role"], "content": str(item["content"]).substr(0, 1500)})
+            history.append({"role": item["role"], "content": str(item["content"])})
     while history.size() > 12:
         history.pop_front()
