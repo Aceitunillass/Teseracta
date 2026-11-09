@@ -102,7 +102,7 @@ func _floating_label(word: String, at: Vector3) -> void:
     sign_label.pixel_size = 0.005
     sign_label.modulate = Color("e6e7f0")
     sign_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-    sign_label.no_depth_test = true
+    sign_label.no_depth_test = false
     sign_label.position = at
     add_child(sign_label)
 
@@ -183,6 +183,12 @@ func _create_interface() -> void:
     var layer := CanvasLayer.new()
     add_child(layer)
     var panel := PanelContainer.new()
+    # El mundo 3D debe quedar DETRAS de toda la interfaz de conversación.
+    var solid_panel := StyleBoxFlat.new()
+    solid_panel.bg_color = Color("171a29")
+    solid_panel.border_color = Color("424c67")
+    solid_panel.border_width_left = 1
+    panel.add_theme_stylebox_override("panel", solid_panel)
     panel.anchor_left = 1.0
     panel.anchor_right = 1.0
     panel.anchor_top = 0.0
@@ -250,6 +256,7 @@ func _create_interface() -> void:
     heading_events.text = "ACTIVIDAD: DECISIONES Y RESULTADOS"
     upper.add_child(heading_events)
     world_log = RichTextLabel.new()
+    world_log.add_theme_font_size_override("normal_font_size", 13)
     world_log.scroll_following = true
     world_log.custom_minimum_size = Vector2(0, 90)
     upper.add_child(world_log)
@@ -268,6 +275,7 @@ func _create_interface() -> void:
     heading_chat.text = "HABLAR CON 404"
     chat_area.add_child(heading_chat)
     dialogue = RichTextLabel.new()
+    dialogue.add_theme_font_size_override("normal_font_size", 16)
     dialogue.scroll_following = true
     dialogue.size_flags_vertical = Control.SIZE_EXPAND_FILL
     dialogue.custom_minimum_size = Vector2(0, 86)
@@ -359,6 +367,8 @@ func _observation() -> Dictionary:
         "posicion_actual": [pomi.position.x, pomi.position.y, pomi.position.z],
         "en_movimiento": moving,
         "ultimo_resultado_del_mundo": last_result,
+        "registros_autobiograficos_guardados": journal.entries.size(),
+        "acceso_memoria": "El diario conserva más episodios de los que caben en una inferencia; distinguir recuerdos accesibles de recuerdos existentes.",
         "ultimas_intenciones_propias": recent_intentions.duplicate(true),
         "objetos_detectados": objects,
         "sensaciones_corporales": body.observation(),
@@ -366,12 +376,12 @@ func _observation() -> Dictionary:
         "limitaciones": ["no mover huesos individuales", "no simular gestos por texto", "no inventar objetos"]
     }
 
-func _start_decision(trigger: String, note: String) -> void:
+func _start_decision(trigger: String, note: String, incoming_message: String = "") -> void:
     if brain == null or bool(brain.get("pending")):
         return
-    var memory_query := note
-    var relevant: Array[Dictionary] = journal.recall(memory_query, 6)
-    if brain.call("deliberate", _observation(), relevant, trigger + ": " + note):
+    var relevant: Array[Dictionary] = journal.recall(note, 4)
+    var recent_turns: Array[Dictionary] = journal.recent_dialogue(8)
+    if brain.call("deliberate", _observation(), relevant, trigger + ": " + note, recent_turns, incoming_message):
         next_thought_at = elapsed_real + autonomy_interval
 
 func _send_chat(message: String) -> void:
@@ -395,7 +405,7 @@ func _dispatch_chat() -> void:
     if queued_chat.is_empty() or bool(brain.get("pending")):
         return
     var message: String = queued_chat[0]
-    _start_decision("mensaje_del_interlocutor", "La otra persona ha dicho: " + message)
+    _start_decision("mensaje_del_interlocutor", "Responder al último mensaje real de la persona.", message)
     if brain != null and bool(brain.get("pending")):
         queued_chat.pop_front()
     else:
