@@ -6,8 +6,10 @@ const AgentScript = preload("res://scripts/pomi_agent.gd")
 const HouseScript = preload("res://scripts/house.gd")
 const OllamaScript = preload("res://scripts/ollama_bridge.gd")
 const VoiceScript = preload("res://scripts/voice_bridge.gd")
+const JournalScript = preload("res://scripts/memory_journal.gd")
 
 var state = SimScript.new()
+var journal = JournalScript.new()
 var home: Node3D
 var pomi: Node3D
 var ollama: Node
@@ -135,6 +137,7 @@ func _build_ui() -> void:
     commands.add_child(pause_button)
     commands.add_child(_make_button("Guardar", _save_game))
     commands.add_child(_make_button("Cargar", _load_game))
+    commands.add_child(_make_button("Copia memoria", _backup_pomi_memory))
     var event_caption := Label.new()
     event_caption.text = "ACTIVIDAD DEL POMI"
     content.add_child(event_caption)
@@ -181,6 +184,7 @@ func _process(delta: float) -> void:
         if dwell_time <= 0.0:
             var action_result: String = state.execute_action(busy_action)
             _event("[Acción verificada] " + action_result)
+            journal.record("world_event", action_result, state.day_index(), state.clock_text())
             busy_action = ""
             idle_time = 3.5
     elif busy_action.is_empty() and not pomi.moving:
@@ -242,6 +246,7 @@ func _send_chat(text_value: String) -> void:
         return
     chat_input.clear()
     state.remember("El jugador dijo: " + text_message.substr(0, 70))
+    journal.record("player_utterance", text_message, state.day_index(), state.clock_text())
     # No intercalar un nuevo mensaje entre fragmentos de la respuesta que aún se dibuja.
     if bool(ollama.get("pending")):
         queued_chat_messages.append(text_message)
@@ -279,6 +284,7 @@ func _request_pomi_reply(text_message: String) -> void:
         "agua_disponible": state.inventory["water"],
         "acontecimientos_verificados_recientes": recent_events
     }
+    facts["memoria_autobiografica_recuperada"] = journal.recall(text_message, 8)
     chat_stream_started = false
     ollama.ask(text_message, facts)
 
@@ -299,6 +305,7 @@ func _on_ollama_answer(text_value: String) -> void:
         _log("Pomi: " + text_value)
     chat_stream_started = false
     state.remember("Pomi respondió al jugador: " + text_value.substr(0, 70))
+    journal.record("pomi_utterance", text_value, state.day_index(), state.clock_text())
     call_deferred("_dispatch_queued_chat")
 
 
@@ -346,8 +353,17 @@ func _toggle_pause() -> void:
     pause_button.text = "Reanudar" if state.paused else "Pausar"
     _refresh_status()
 
+func _backup_pomi_memory() -> void:
+    var location: String = journal.backup()
+    if location.is_empty():
+        _event("Aun no hay recuerdos registrados, o fallo el respaldo del diario.")
+        return
+    _event("Copia de la memoria creada en: " + location)
+
+
 func _save_game() -> void:
     var data := state.as_dict()
+    data["journal_active"] = true
     data["pomi_position"] = [pomi.position.x, pomi.position.y, pomi.position.z]
     data["conversation"] = ollama.export_history()
     var file := FileAccess.open("user://teseracta_save_v1.json", FileAccess.WRITE)
@@ -369,6 +385,8 @@ func _load_game() -> void:
         return
     pomi.restore_position(data.get("pomi_position", []))
     ollama.load_history(data.get("conversation", []))
+    if not bool(data.get("journal_active", false)):
+        journal.import_legacy_conversation(data.get("conversation", []), state.day_index(), state.clock_text())
     busy_action = ""
     idle_time = 4.0
     _refresh_status()
