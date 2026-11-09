@@ -52,9 +52,11 @@ class Test404Architecture(unittest.TestCase):
         journal = source("scripts/memory_journal.gd")
         self.assertIn('JOURNAL_PATH := "user://pomi_01_memoria.jsonl"', journal)
 
-    def test_local_ministral_and_no_scripted_actions(self):
+    def test_local_model_and_no_scripted_actions(self):
         config = json.loads(source("config/ai_404.json"))
-        self.assertIn(config["model"], ["ministral-3:3b", "ministral-3:8b"])
+        # No fijar la prueba a un modelo: el usuario compara Qwen y Ministral.
+        self.assertIsInstance(config["model"], str)
+        self.assertTrue(config["model"].strip())
         room = source("scripts/main404.gd")
         self.assertIn('brain.call("deliberate"', room)
         self.assertIn('"iniciativa_autonoma"', room)
