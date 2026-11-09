@@ -88,6 +88,20 @@ class Test404Architecture(unittest.TestCase):
         self.assertLessEqual(config["request_timeout_seconds"], 100)
         self.assertLessEqual(config["context_window"], 3072)
 
+    def test_direct_chat_has_speech_and_stale_requests_cannot_override_it(self):
+        brain = source("scripts/brain404.gd")
+        room = source("scripts/main404.gd")
+        runtime = source("config/identity_404_runtime.txt")
+        self.assertIn('speech_schema["minLength"] = 1', brain)
+        self.assertIn("request_serial += 1", brain)
+        self.assertIn("received_serial != request_serial", brain)
+        self.assertIn('"_origin": "direct_message" if was_direct_message else "autonomous"', brain)
+        self.assertIn("404 no ha emitido ninguna respuesta verbal", room)
+        self.assertIn("interaction_type", runtime)
+        self.assertIn("NO pongas toda la respuesta únicamente en reflection", runtime)
+        self.assertIn("habla: %d caracteres", brain)
+
+
 
 if __name__ == "__main__":
     unittest.main()
