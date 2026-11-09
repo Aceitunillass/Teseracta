@@ -201,7 +201,7 @@ func _refresh_status() -> void:
         return
     status_label.text = "Día %d · %s · %s | Estado de ánimo %d%%" % [state.day_index(), state.clock_text(), "PAUSA" if state.paused else "VIVO", roundi(state.mood())]
     var names := {"hunger": "Saciedad", "energy": "Energía", "bladder": "Vejiga", "hygiene": "Higiene", "fun": "Diversión"}
-    var parts: Array[String] = []
+    var parts := PackedStringArray()
     for key in SimScript.NEED_KEYS:
         parts.append("%s %d%%" % [names[key], roundi(float(state.needs[key]))])
     needs_label.text = " · ".join(parts)
