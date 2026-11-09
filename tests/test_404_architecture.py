@@ -130,5 +130,16 @@ class Test404Architecture(unittest.TestCase):
 
 
 
+    def test_chat_input_stays_visible_when_more_controls_are_added(self):
+        room = source("scripts/main404.gd")
+        self.assertIn('controls_scroll.name = "ControlesDesplazables"', room)
+        self.assertIn('chat_area.name = "ChatFijo"', room)
+        self.assertIn('controls_scroll.add_child(upper)', room)
+        self.assertIn('contents.add_child(chat_area)', room)
+        self.assertIn('chat_area.add_child(chat_input)', room)
+        self.assertNotIn('upper.add_child(chat_input)', room)
+        self.assertLess(room.index('contents.add_child(chat_area)'), room.index('chat_area.add_child(chat_input)'))
+
+
 if __name__ == "__main__":
     unittest.main()
