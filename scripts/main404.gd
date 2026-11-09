@@ -288,7 +288,7 @@ func _render_transcript() -> void:
     if dialogue == null:
         return
     # Un solo historial: el mensaje parcial permanece en su posición definitiva.
-    dialogue.text = "\n".join(transcript_lines) + "\n"
+    dialogue.text = "\n".join(PackedStringArray(transcript_lines)) + "\n"
 
 
 func _say(message: String) -> void:
@@ -383,6 +383,7 @@ func _send_chat(message: String) -> void:
     if brain != null and bool(brain.get("pending")):
         # Prioridad humana: cancelar una reflexión autónoma para poder atender el chat.
         if bool(brain.call("cancel_autonomous_for_chat")):
+            _clear_speech_preview()
             _event("Reflexión autónoma interrumpida para atender tu mensaje.")
     if brain != null and not bool(brain.get("pending")) and not moving:
         chat_retry_at = elapsed_real
