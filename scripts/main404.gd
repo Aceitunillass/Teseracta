@@ -353,17 +353,28 @@ func _toggle_reflections() -> void:
 func _refresh_reflections() -> void:
     if reflection_view == null:
         return
+    var lines: PackedStringArray = []
+    lines.append("ÚLTIMAS DECISIONES (JSON; no son movimientos confirmados)")
+    if recent_intentions.is_empty():
+        lines.append("No hay decisiones recientes en esta sesión.")
+    else:
+        for intention in recent_intentions:
+            lines.append("%s: %s hacia %s" % [
+                str(intention.get("momento", "")),
+                str(intention.get("accion_solicitada", "")),
+                str(intention.get("objetivo", ""))
+            ])
+    lines.append("\nREFLEXIONES DECLARADAS (no razonamiento oculto)")
     var notes: Array[Dictionary] = journal.recent_reflections(12)
     if notes.is_empty():
-        reflection_view.text = "404 todavía no ha generado ninguna nota privada registrada."
-        return
-    var lines: PackedStringArray = []
-    for note in notes:
-        lines.append("Día %s · %s\n%s" % [
-            str(note.get("day", "?")),
-            str(note.get("clock", "?")),
-            str(note.get("text", ""))
-        ])
+        lines.append("404 todavía no ha generado ninguna nota privada registrada.")
+    else:
+        for note in notes:
+            lines.append("Día %s · %s\n%s" % [
+                str(note.get("day", "?")),
+                str(note.get("clock", "?")),
+                str(note.get("text", ""))
+            ])
     reflection_view.text = "\n\n".join(lines)
 
 
@@ -563,11 +574,11 @@ func _on_decision(decision: Dictionary) -> void:
     var reflection: String = str(decision.get("reflection", "")).strip_edges()
     if not reflection.is_empty():
         journal.record("private_reflection", reflection, body.day_index(), body.clock_text())
-        if reflection_panel != null and reflection_panel.visible:
-            _refresh_reflections()
     var requested_action: String = str(decision.get("action", "none"))
     var requested_target: String = str(decision.get("target", "none"))
     _execute_proposal(requested_action, requested_target, decision.get("point", []))
+    if reflection_panel != null and reflection_panel.visible:
+        _refresh_reflections()
     call_deferred("_continue_dialogue")
 
 func _continue_dialogue() -> void:
