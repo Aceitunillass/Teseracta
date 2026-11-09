@@ -59,7 +59,7 @@ func deliberate(perception: Dictionary, autobiographical_context: Array[Dictiona
         "speech_requirement": "Responde verbalmente a la persona en speech. No respondas solo en reflection." if direct_message else "Puedes decidir callar, hablar o actuar.",
         "world_observation": perception,
         "recalled_records": recalled,
-        "protocol": "Devuelve solo JSON válido y escribe speech primero, después action, target y reflection. Sin Markdown."
+        "protocol": "Devuelve JSON válido: speech primero, luego action, target, reflection y opcionalmente point. Para moverte a una posición libre, usa action=move, target=point y point=[x,z]. Para no moverte usa action=none o wait; target=none no es un destino. Sin Markdown."
     }
     var speech_schema: Dictionary = {"type": "string"}
     if direct_message:
@@ -71,7 +71,8 @@ func deliberate(perception: Dictionary, autobiographical_context: Array[Dictiona
         "properties": {
             "speech": speech_schema,
             "action": {"type": "string", "enum": ["none", "move", "use", "inspect", "wait"]},
-            "target": {"type": "string", "enum": ["none", "food", "bed", "toilet", "center"]},
+            "target": {"type": "string", "enum": ["none", "food", "bed", "toilet", "center", "point"]},
+            "point": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
             "reflection": {"type": "string", "maxLength": 240}
         },
         "required": ["speech", "action", "target", "reflection"],
@@ -277,13 +278,14 @@ func _finish(metadata: Dictionary) -> void:
     var decision: Dictionary = decoded
     var action: String = str(decision.get("action", "none"))
     var target: String = str(decision.get("target", "none"))
-    if not (action in ["none", "move", "use", "inspect", "wait"]) or not (target in ["none", "food", "bed", "toilet", "center"]):
+    if not (action in ["none", "move", "use", "inspect", "wait"]) or not (target in ["none", "food", "bed", "toilet", "center", "point"]):
         inference_failed.emit("Ministral intentó una acción o destino inexistente.")
         return
     var final_decision: Dictionary = {
         "speech": str(decision.get("speech", "")),
         "action": action,
         "target": target,
+        "point": decision.get("point", []),
         "reflection": str(decision.get("reflection", "")),
         "_origin": "direct_message" if direct else "autonomous"
     }
