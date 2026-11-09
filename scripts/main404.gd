@@ -22,6 +22,8 @@ var displayed_speech: String = ""
 var pending_reply_index: int = -1
 var next_preview_at_ms: int = 0
 var world_log: RichTextLabel
+var reflection_panel: PanelContainer
+var reflection_view: RichTextLabel
 var status_label: Label
 var cognition_label: Label
 var chat_input: LineEdit
@@ -293,6 +295,77 @@ func _create_interface() -> void:
     chat_area.add_child(chat_buttons)
     chat_buttons.add_child(_button("Enviar", func(): _send_chat(chat_input.text)))
     chat_buttons.add_child(_button("Observar", _request_observation))
+    chat_buttons.add_child(_button("Reflexiones", _toggle_reflections))
+
+    # Ventana emergente dentro del juego, separada del chat y oculta por defecto.
+    # Solo exhibe reflexiones que el modelo entrega expresamente en el JSON.
+    reflection_panel = PanelContainer.new()
+    reflection_panel.name = "ReflexionesDeclaradas"
+    reflection_panel.anchor_left = 1.0
+    reflection_panel.anchor_right = 1.0
+    reflection_panel.anchor_top = 0.0
+    reflection_panel.anchor_bottom = 1.0
+    reflection_panel.offset_left = -820
+    reflection_panel.offset_right = -435
+    reflection_panel.offset_top = 16
+    reflection_panel.offset_bottom = -16
+    var reflection_background := StyleBoxFlat.new()
+    reflection_background.bg_color = Color("151b29")
+    reflection_background.border_color = Color("52647c")
+    reflection_background.set_border_width_all(1)
+    reflection_panel.add_theme_stylebox_override("panel", reflection_background)
+    layer.add_child(reflection_panel)
+    var reflection_margin := MarginContainer.new()
+    reflection_margin.add_theme_constant_override("margin_left", 12)
+    reflection_margin.add_theme_constant_override("margin_right", 12)
+    reflection_margin.add_theme_constant_override("margin_top", 12)
+    reflection_margin.add_theme_constant_override("margin_bottom", 12)
+    reflection_panel.add_child(reflection_margin)
+    var reflections_layout := VBoxContainer.new()
+    reflection_margin.add_child(reflections_layout)
+    var reflections_header := HBoxContainer.new()
+    reflections_layout.add_child(reflections_header)
+    var reflection_title := Label.new()
+    reflection_title.text = "REFLEXIONES DECLARADAS DE 404"
+    reflection_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    reflections_header.add_child(reflection_title)
+    reflections_header.add_child(_button("Cerrar", _toggle_reflections))
+    var reflection_notice := Label.new()
+    reflection_notice.text = "Notas generadas por el modelo, NO acceso a razonamiento oculto ni pruebas de acciones."
+    reflection_notice.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    reflection_notice.add_theme_font_size_override("font_size", 12)
+    reflections_layout.add_child(reflection_notice)
+    reflection_view = RichTextLabel.new()
+    reflection_view.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    reflection_view.scroll_following = true
+    reflections_layout.add_child(reflection_view)
+    reflection_panel.visible = false
+    _refresh_reflections()
+
+func _toggle_reflections() -> void:
+    if reflection_panel == null:
+        return
+    reflection_panel.visible = not reflection_panel.visible
+    if reflection_panel.visible:
+        _refresh_reflections()
+
+
+func _refresh_reflections() -> void:
+    if reflection_view == null:
+        return
+    var notes: Array[Dictionary] = journal.recent_reflections(12)
+    if notes.is_empty():
+        reflection_view.text = "404 todavía no ha generado ninguna nota privada registrada."
+        return
+    var lines: PackedStringArray = []
+    for note in notes:
+        lines.append("Día %s · %s\n%s" % [
+            str(note.get("day", "?")),
+            str(note.get("clock", "?")),
+            str(note.get("text", ""))
+        ])
+    reflection_view.text = "\n\n".join(lines)
+
 
 func _render_transcript() -> void:
     if dialogue == null:
@@ -371,7 +444,7 @@ func _observation() -> Dictionary:
         "movimiento_posible_ahora": body.movement_factor() > 0.0 and not simulation_paused,
         "capacidad_fisica": "404 tiene un cuerpo virtual real dentro de la simulacion. Puede solicitar acciones JSON y Godot las ejecuta si son viables. Hablar o describir un gesto en speech no produce movimiento.",
         "protocolo_de_accion": {
-            "move": "El cuerpo completo camina hasta el objetivo indicado: food, bed, toilet o center.",
+            "move": "El cuerpo completo camina a food, bed, toilet, center o a un punto libre: target=point y point=[x,z].",
             "use": "El cuerpo camina y despues utiliza food, bed o toilet si hay condiciones validas.",
             "inspect": "Comprueba el objetivo desde una distancia admisible.",
             "none_wait": "Permite no realizar ninguna accion corporal voluntaria."
@@ -384,6 +457,7 @@ func _observation() -> Dictionary:
         "ultimas_intenciones_propias": recent_intentions.duplicate(true),
         "objetos_detectados": objects,
         "sensaciones_corporales": body.observation(),
+        "zona_de_movimiento_libre": {"x_min": -3.4, "x_max": 3.4, "z_min": -1.15, "z_max": 2.45, "descripcion": "Pasillo libre delante de los tres cubos. Las coordenadas x,z son posiciones físicas y no nombres de objetos."},
         "capacidades": ["move", "use", "inspect", "wait", "none"],
         "limitaciones": ["no articular manos, rostro o huesos individuales", "speech no ejecuta acciones: usa action y target", "no inventar objetos ni movimientos confirmados"]
     }
@@ -489,21 +563,23 @@ func _on_decision(decision: Dictionary) -> void:
     var reflection: String = str(decision.get("reflection", "")).strip_edges()
     if not reflection.is_empty():
         journal.record("private_reflection", reflection, body.day_index(), body.clock_text())
+        if reflection_panel != null and reflection_panel.visible:
+            _refresh_reflections()
     var requested_action: String = str(decision.get("action", "none"))
     var requested_target: String = str(decision.get("target", "none"))
-    _execute_proposal(requested_action, requested_target)
+    _execute_proposal(requested_action, requested_target, decision.get("point", []))
     call_deferred("_continue_dialogue")
 
 func _continue_dialogue() -> void:
     if not queued_chat.is_empty() and brain != null and not bool(brain.get("pending")) and not moving and elapsed_real >= chat_retry_at:
         _dispatch_chat()
 
-func _execute_proposal(action: String, target: String) -> void:
-    # Registrar TODAS las elecciones del LLM, incluso callar o no actuar.
-    # Esta información no es una experiencia física confirmada.
+func _execute_proposal(action: String, target: String, point: Variant = []) -> void:
+    # Las intenciones son decisiones generativas, NO hechos físicos confirmados.
     var intention: Dictionary = {
         "accion_solicitada": action,
         "objetivo": target,
+        "punto_solicitado": point,
         "momento": "dia %d, %s" % [body.day_index(), body.clock_text()]
     }
     recent_intentions.append(intention)
@@ -515,32 +591,59 @@ func _execute_proposal(action: String, target: String) -> void:
     if action == "wait":
         _event("[DECISION DE 404] Prefiere esperar por ahora.")
         return
-    _event("[DECISION DE 404] Solicita %s sobre %s; pendiente de validación." % [action, target])
-    if not targets.has(target):
-        _result("404 pidió un objetivo que no existe: " + target)
+
+    var requested_position: Vector3 = Vector3.ZERO
+    var destination_label: String = target
+    if action == "move" and target == "point":
+        if not (point is Array) or point.size() != 2:
+            _result("Movimiento no ejecutado: un destino libre requiere point=[x,z], con dos números.")
+            return
+        if not ((typeof(point[0]) == TYPE_FLOAT or typeof(point[0]) == TYPE_INT) and (typeof(point[1]) == TYPE_FLOAT or typeof(point[1]) == TYPE_INT)):
+            _result("Movimiento no ejecutado: las coordenadas x,z no son números.")
+            return
+        var x: float = float(point[0])
+        var z: float = float(point[1])
+        if is_nan(x) or is_nan(z) or is_inf(x) or is_inf(z) or x < -3.4 or x > 3.4 or z < -1.15 or z > 2.45:
+            _result("Movimiento no ejecutado: el punto solicitado está fuera del pasillo transitable.")
+            return
+        requested_position = Vector3(x, 0.0, z)
+        destination_label = "punto (%.2f, %.2f)" % [x, z]
+    elif targets.has(target):
+        requested_position = targets[target]
+    else:
+        _result("Acción %s rechazada: target=%s no indica un destino. Para moverte libremente usa target=point y point=[x,z]." % [action, target])
         return
+
     if action == "inspect":
-        var distance: float = pomi.position.distance_to(targets[target])
+        if target == "point":
+            _result("Inspección rechazada: un punto libre no es un objeto inspeccionable.")
+            return
+        var distance: float = pomi.position.distance_to(requested_position)
         if distance > 2.8:
             _result("404 intentó inspeccionar %s, pero estaba demasiado lejos." % target)
         else:
             _result("Observación del objeto %s: %s; distancia %.1f metros." % [target, JSON.stringify(_observation()["objetos_detectados"][target]), distance])
         return
-    if action == "use" and target == "center":
-        _result("404 intentó utilizar el centro de la sala, pero no es un objeto utilizable.")
-        return
-    if body.movement_factor() <= 0.0:
-        _result("404 no pudo moverse: su estado físico no se lo permite.")
+    if action == "use" and (target == "center" or target == "point"):
+        _result("Uso rechazado: solo se pueden utilizar los objetos food, bed o toilet.")
         return
     if action != "move" and action != "use":
         _result("Se rechazó una acción inexistente.")
         return
+    if simulation_paused:
+        _result("404 intentó desplazarse, pero el reloj corporal está pausado. Reanudarlo permite caminar.")
+        return
+    if body.movement_factor() <= 0.0:
+        _result("404 no pudo moverse: su salud es cero.")
+        return
+
+    _event("[DECISION DE 404] Solicita %s hacia %s; pendiente de ejecución." % [action, destination_label])
     walk_start_position = pomi.position
-    walk_target = targets[target]
-    active_destination = target
+    walk_target = requested_position
+    active_destination = destination_label
     use_after_walk = target if action == "use" else ""
     moving = true
-    _event("404 decidió desplazarse hacia %s." % target)
+    _event("404 decidió desplazarse hacia %s." % destination_label)
 
 func _update_walk(delta: float) -> void:
     if not moving:
