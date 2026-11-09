@@ -170,7 +170,7 @@ func _process(delta: float) -> void:
         dwell_time -= delta
         if dwell_time <= 0.0:
             var action_result: String = state.execute_action(busy_action)
-            _log("Pomi: " + action_result)
+            _log("[Acción verificada] " + action_result)
             busy_action = ""
             idle_time = 3.5
     elif busy_action.is_empty() and not pomi.moving:
@@ -236,7 +236,33 @@ func _send_chat(text_value: String) -> void:
 
 
 func _request_pomi_reply(text_message: String) -> void:
-    var facts: Dictionary = {"nombre": "Pomi 01", "ubicacion": "Su casa en Teseracta", "día": state.day_index(), "hora": state.clock_text(), "necesidades": state.needs, "comida_disponible": state.inventory["food"], "agua_disponible": state.inventory["water"], "recuerdos_relevantes": state.history.slice(maxi(0, state.history.size() - 5), state.history.size())}
+    # Diferenciar sucesos registrados de diálogos: algo dicho por el jugador no es
+    # automáticamente un hecho verdadero, aunque se haya almacenado en el historial.
+    var events: Array[String] = []
+    for record in state.history:
+        var event_text: String = str(record)
+        if event_text.contains("El jugador dijo:") or event_text.contains("Pomi respondió al jugador:"):
+            continue
+        events.append(event_text)
+    var recent_events: Array[String] = events.slice(maxi(0, events.size() - 5), events.size())
+    var current_room := "cocina y salón"
+    if pomi.position.x < -2.0:
+        current_room = "dormitorio"
+    elif pomi.position.x > 2.0:
+        current_room = "baño"
+    var current_activity := "caminando hacia %s" % busy_action if pomi.moving else "sin desplazamiento"
+    var facts: Dictionary = {
+        "nombre": "Pomi 01",
+        "vivienda": "Casa piloto en Teseracta",
+        "habitacion_actual": current_room,
+        "actividad_actual_observable": current_activity,
+        "día": state.day_index(),
+        "hora": state.clock_text(),
+        "necesidades": state.needs.duplicate(true),
+        "comida_disponible": state.inventory["food"],
+        "agua_disponible": state.inventory["water"],
+        "acontecimientos_verificados_recientes": recent_events
+    }
     chat_stream_started = false
     ollama.ask(text_message, facts)
 
