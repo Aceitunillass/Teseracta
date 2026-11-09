@@ -191,71 +191,103 @@ func _create_interface() -> void:
     panel.offset_top = 12
     panel.offset_bottom = -12
     layer.add_child(panel)
+
     var margins := MarginContainer.new()
     margins.add_theme_constant_override("margin_left", 10)
     margins.add_theme_constant_override("margin_right", 10)
     margins.add_theme_constant_override("margin_top", 10)
     margins.add_theme_constant_override("margin_bottom", 10)
     panel.add_child(margins)
+
+    # Contenedor raíz: el chat tiene su propia zona FIJA y siempre visible.
+    # Los controles superiores pueden desplazarse sin expulsar LineEdit.
     var contents := VBoxContainer.new()
-    contents.add_theme_constant_override("separation", 7)
+    contents.add_theme_constant_override("separation", 5)
     margins.add_child(contents)
+
+    var controls_scroll := ScrollContainer.new()
+    controls_scroll.name = "ControlesDesplazables"
+    controls_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    controls_scroll.size_flags_stretch_ratio = 0.65
+    controls_scroll.custom_minimum_size = Vector2(0, 70)
+    controls_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+    contents.add_child(controls_scroll)
+
+    var upper := VBoxContainer.new()
+    upper.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    upper.add_theme_constant_override("separation", 6)
+    controls_scroll.add_child(upper)
+
     var heading := Label.new()
     heading.text = "TESERACTA · 404"
     heading.add_theme_font_size_override("font_size", 22)
-    contents.add_child(heading)
+    upper.add_child(heading)
+
     status_label = Label.new()
     status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-    contents.add_child(status_label)
+    upper.add_child(status_label)
     cognition_label = Label.new()
     cognition_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-    contents.add_child(cognition_label)
+    upper.add_child(cognition_label)
+
     var save_controls := HBoxContainer.new()
-    contents.add_child(save_controls)
+    upper.add_child(save_controls)
     save_controls.add_child(_button("Guardar 404", _save_state))
     save_controls.add_child(_button("Cargar", _reload_state))
     save_controls.add_child(_button("Copia memoria", _backup_memory))
+
     var maintenance := HBoxContainer.new()
-    contents.add_child(maintenance)
+    upper.add_child(maintenance)
     maintenance.add_child(_button("Reponer comida (+12)", _restock_food))
     maintenance.add_child(_button("Cuidar a 404", _restore_404_health))
     simulation_pause_button = _button("Reanudar tiempo" if simulation_paused else "Pausar tiempo", _toggle_simulation_pause)
-    contents.add_child(simulation_pause_button)
+    upper.add_child(simulation_pause_button)
     autonomy_button = _button("Pausar iniciativa", _toggle_autonomy)
-    contents.add_child(autonomy_button)
+    upper.add_child(autonomy_button)
+
     var heading_events := Label.new()
     heading_events.text = "ACONTECIMIENTOS VERIFICADOS"
-    contents.add_child(heading_events)
+    upper.add_child(heading_events)
     world_log = RichTextLabel.new()
     world_log.scroll_following = true
-    world_log.custom_minimum_size = Vector2(0, 95)
-    contents.add_child(world_log)
-    contents.add_child(HSeparator.new())
+    world_log.custom_minimum_size = Vector2(0, 90)
+    upper.add_child(world_log)
+
+    # Área de conversación fuera del scroll; permanecerá accesible incluso
+    # cuando el número de botones, registros o diagnósticos aumente.
+    var chat_area := VBoxContainer.new()
+    chat_area.name = "ChatFijo"
+    chat_area.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    chat_area.size_flags_stretch_ratio = 1.0
+    chat_area.custom_minimum_size = Vector2(0, 235)
+    chat_area.add_theme_constant_override("separation", 4)
+    contents.add_child(chat_area)
+
     var heading_chat := Label.new()
     heading_chat.text = "HABLAR CON 404"
-    contents.add_child(heading_chat)
+    chat_area.add_child(heading_chat)
     dialogue = RichTextLabel.new()
     dialogue.scroll_following = true
     dialogue.size_flags_vertical = Control.SIZE_EXPAND_FILL
-    dialogue.custom_minimum_size = Vector2(0, 160)
-    contents.add_child(dialogue)
+    dialogue.custom_minimum_size = Vector2(0, 86)
+    chat_area.add_child(dialogue)
+
     live_reply = RichTextLabel.new()
-    live_reply.custom_minimum_size = Vector2(0, 52)
+    live_reply.custom_minimum_size = Vector2(0, 48)
     live_reply.fit_content = false
-    contents.add_child(live_reply)
+    chat_area.add_child(live_reply)
+
     chat_input = LineEdit.new()
+    chat_input.name = "EscribirA404"
     chat_input.placeholder_text = "Escribe a 404..."
+    chat_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     chat_input.text_submitted.connect(_send_chat)
-    contents.add_child(chat_input)
+    chat_area.add_child(chat_input)
+
     var chat_buttons := HBoxContainer.new()
-    contents.add_child(chat_buttons)
+    chat_area.add_child(chat_buttons)
     chat_buttons.add_child(_button("Enviar", func(): _send_chat(chat_input.text)))
     chat_buttons.add_child(_button("Observar", _request_observation))
-    var hint := Label.new()
-    hint.text = "404 decide qué decir y qué intentar hacer.\nGodot valida. Ministral se ejecuta localmente con Ollama."
-    hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-    hint.add_theme_font_size_override("font_size", 11)
-    contents.add_child(hint)
 
 func _say(message: String) -> void:
     if dialogue != null:
