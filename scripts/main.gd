@@ -34,9 +34,6 @@ var shown_partial: String = ""
 var next_visual_update_ms: int = 0
 var autonomy_enabled: bool = true
 var autonomous_next: float = 18.0
-var last_rejected_command: String = ""
-var consecutive_same_rejection: int = 0
-var last_autonomous_speech: String = ""
 var elapsed: float = 0.0
 var physics_accumulator: float = 0.0
 var status_accumulator: float = 0.0
@@ -482,8 +479,6 @@ func _send_message(content: String) -> void:
     var cleaned: String = content.strip_edges()
     if cleaned.is_empty():
         return
-    # Una conversación nueva permite respuestas nuevas aunque sean parecidas.
-    last_autonomous_speech = ""
     message_input.clear()
     memory.record("user", cleaned)
     _refresh_chat()
@@ -516,9 +511,7 @@ func _begin_request(message: String, autonomous: bool) -> bool:
             history.pop_back()
     var started: bool = brain.request(memory.prompt, memory.model, world.action_api(), world.observe(), history, memory.recent_verified_events(5), message, autonomous)
     if started:
-        # No forzar deliberaciones de idéntico entorno cada pocos segundos.
-        # Los resultados del mundo pueden reactivar antes a 404.
-        autonomous_next = elapsed + (120.0 if autonomous else 90.0)
+        autonomous_next = elapsed + 35.0
     return started
 
 
@@ -540,45 +533,22 @@ func _on_partial_speech(text: String) -> void:
 
 
 func _on_reply(result: Dictionary) -> void:
-    var was_autonomous: bool = brain.autonomous_request
     active_direct_message = ""
     partial_speech = ""
     shown_partial = ""
     next_visual_update_ms = 0
     var words: String = str(result.get("speech", "")).strip_edges()
     var note: String = str(result.get("reflection", "")).strip_edges()
-    # Evitar que el mismo mensaje autónomo se vuelva a mostrar literalmente
-    # si el modelo se atasca; no alteramos su decisión corporal ni el resultado.
-    var duplicate_autonomous: bool = was_autonomous and not words.is_empty() and words.to_lower() == last_autonomous_speech
-    if duplicate_autonomous:
-        _debug("La intervención autónoma repitió exactamente la última frase; no se duplicó en el chat.")
-    elif not words.is_empty():
+    if not words.is_empty():
         memory.record("agent", words)
-    if was_autonomous:
-        last_autonomous_speech = words.to_lower()
     if not note.is_empty():
         memory.record("reflection", note)
     _refresh_chat()
-    autonomous_next = elapsed + (120.0 if was_autonomous else 90.0)
     var action: Variant = result.get("action", {"type": "Wait", "data": {}})
     if action is Dictionary:
-        var signature: String = JSON.stringify(action)
-        _debug("404 propuso: " + signature)
+        _debug("404 propuso: " + JSON.stringify(action))
         var verdict: Dictionary = world.submit_action(action)
-        var accepted: bool = bool(verdict.get("ok", false))
         _debug("Respuesta del mundo: " + str(verdict.get("message", "")))
-        if accepted:
-            last_rejected_command = ""
-            consecutive_same_rejection = 0
-        else:
-            if signature == last_rejected_command:
-                consecutive_same_rejection += 1
-            else:
-                last_rejected_command = signature
-                consecutive_same_rejection = 1
-            if consecutive_same_rejection >= 2:
-                autonomous_next = elapsed + 150.0
-                _debug("Intento idéntico rechazado %d veces. Se aplaza la próxima deliberación espontánea; consulta el motivo del rechazo." % consecutive_same_rejection)
         _drain_world_events()
     _send_next_if_possible()
 
@@ -594,7 +564,7 @@ func _on_brain_error(reason: String) -> void:
         active_direct_message = ""
         next_chat_retry = elapsed + 8.0
         _debug("Mensaje conservado; reintento en al menos 8 s.")
-    autonomous_next = elapsed + 100.0
+    autonomous_next = elapsed + 35.0
 
 
 func _on_metrics(details: String) -> void:
@@ -607,11 +577,6 @@ func _drain_world_events() -> void:
         return
     for item in new_events:
         memory.record_event(item)
-        var kind: String = str(item.get("kind", ""))
-        # Terminar o bloquearse es una novedad real: ofrecer otra decisión
-        # sin generar pensamientos cada tick ni mientras el cuerpo se mueve.
-        if kind == "move_completed" or kind == "move_blocked":
-            autonomous_next = minf(autonomous_next, elapsed + 2.0)
     _refresh_debug()
 
 
@@ -639,9 +604,9 @@ func _process(delta: float) -> void:
     if not brain.pending:
         if not queued_messages.is_empty():
             _send_next_if_possible()
-        elif autonomy_enabled and not world.moving and elapsed >= autonomous_next:
+        elif autonomy_enabled and elapsed >= autonomous_next:
             if not _begin_request("", true):
-                autonomous_next = elapsed + 45.0
+                autonomous_next = elapsed + 35.0
 
 
 func _update_status() -> void:
