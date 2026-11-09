@@ -15,6 +15,7 @@ var started_at_ms: int = 0
 var request_timeout_seconds: float = 100.0
 var context_window: int = 3072
 var http: HTTPRequest
+var request_serial: int = 0
 
 func _ready() -> void:
     if FileAccess.file_exists(CONFIG):
@@ -25,10 +26,6 @@ func _ready() -> void:
                 model_name = selected
             request_timeout_seconds = clampf(float(settings.get("request_timeout_seconds", request_timeout_seconds)), 25.0, 240.0)
             context_window = clampi(int(settings.get("context_window", context_window)), 2048, 8192)
-    http = HTTPRequest.new()
-    http.timeout = request_timeout_seconds
-    add_child(http)
-    http.request_completed.connect(_on_response)
 
 func deliberate(perception: Dictionary, autobiographical_context: Array[Dictionary], trigger: String) -> bool:
     if pending:
@@ -48,19 +45,27 @@ func deliberate(perception: Dictionary, autobiographical_context: Array[Dictiona
             "text": str(entry.get("text", "")).substr(0, 380),
             "provenance": str(entry.get("provenance", "desconocido"))
         })
+    var direct_message: bool = trigger.begins_with("mensaje_del_interlocutor")
     var input_packet: Dictionary = {
         "trigger": trigger,
+        "interaction_type": "direct_message" if direct_message else "autonomous_deliberation",
+        "speech_requirement": "Responde verbalmente a la persona en speech. No respondas solo en reflection." if direct_message else "Puedes decidir callar, hablar o actuar.",
         "world_observation": perception,
         "recalled_records": recalled,
         "protocol": "Devuelve un objeto JSON con speech, action, target y reflection. Sin Markdown ni texto fuera del JSON."
     }
+    var speech_schema: Dictionary = {"type": "string"}
+    if direct_message:
+        # Un chat dirigido a 404 requiere una respuesta verbal verificable;
+        # en iniciativas autónomas sigue pudiendo guardar silencio.
+        speech_schema["minLength"] = 1
     var schema := {
         "type": "object",
         "properties": {
-            "speech": {"type": "string"},
+            "speech": speech_schema,
             "action": {"type": "string", "enum": ["none", "move", "use", "inspect", "wait"]},
             "target": {"type": "string", "enum": ["none", "food", "bed", "toilet", "center"]},
-            "reflection": {"type": "string"}
+            "reflection": {"type": "string", "maxLength": 240}
         },
         "required": ["speech", "action", "target", "reflection"],
         "additionalProperties": false
@@ -77,6 +82,11 @@ func deliberate(perception: Dictionary, autobiographical_context: Array[Dictiona
         ],
         "options": {"num_ctx": context_window, "temperature": 0.7}
     }
+    request_serial += 1
+    http = HTTPRequest.new()
+    http.timeout = request_timeout_seconds
+    add_child(http)
+    http.request_completed.connect(Callable(self, "_on_response").bind(request_serial))
     pending = true
     active_trigger = trigger
     started_at_ms = Time.get_ticks_msec()
@@ -89,6 +99,8 @@ func deliberate(perception: Dictionary, autobiographical_context: Array[Dictiona
     if result != OK:
         pending = false
         active_trigger = ""
+        http.queue_free()
+        http = null
         inference_failed.emit("No se pudo enviar la solicitud a Ollama (error %d)." % result)
         return false
     return true
@@ -102,17 +114,27 @@ func seconds_waiting() -> float:
 func cancel_autonomous_for_chat() -> bool:
     if not pending or not active_trigger.begins_with("iniciativa_autonoma"):
         return false
-    http.cancel_request()
+    # Cada solicitud lleva número propio; una respuesta vieja no debe
+    # confundirse con la conversación nueva después de una cancelación.
+    request_serial += 1
     pending = false
     active_trigger = ""
+    if is_instance_valid(http):
+        http.cancel_request()
+        http.queue_free()
+    http = null
     return true
 
 
-func _on_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
-    if not pending:
+func _on_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, received_serial: int) -> void:
+    if received_serial != request_serial or not pending:
         return
+    var was_direct_message: bool = active_trigger.begins_with("mensaje_del_interlocutor")
     pending = false
     active_trigger = ""
+    if is_instance_valid(http):
+        http.queue_free()
+    http = null
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
         inference_failed.emit("Ministral no respondió correctamente (HTTP %d, red %d): %s" % [response_code, result, body.get_string_from_utf8().substr(0, 350)])
         return
@@ -141,11 +163,12 @@ func _on_response(result: int, response_code: int, _headers: PackedStringArray, 
         "speech": str(decision.get("speech", "")),
         "action": action,
         "target": target,
-        "reflection": str(decision.get("reflection", ""))
+        "reflection": str(decision.get("reflection", "")),
+        "_origin": "direct_message" if was_direct_message else "autonomous"
     }
     decision_ready.emit(clean)
     var seconds: float = float(response.get("total_duration", 0)) / 1000000000.0
     var tokens: int = int(response.get("eval_count", 0))
     var generation_seconds: float = float(response.get("eval_duration", 0)) / 1000000000.0
     if seconds > 0.0:
-        inference_metrics.emit("%s: %.1fs, %d tokens, %.1f tokens/s" % [model_name, seconds, tokens, float(tokens) / maxf(generation_seconds, 0.001)])
+        inference_metrics.emit("%s: %.1fs, %d tokens, %.1f tokens/s; habla: %d caracteres; origen: %s" % [model_name, seconds, tokens, float(tokens) / maxf(generation_seconds, 0.001), str(clean["speech"]).length(), str(clean["_origin"])])
