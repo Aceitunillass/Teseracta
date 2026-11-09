@@ -16,6 +16,11 @@ var pomi: Node3D
 var avatar: Node3D
 var camera: Camera3D
 var dialogue: RichTextLabel
+var live_reply: RichTextLabel
+var streaming_speech: String = ""
+var displayed_speech: String = ""
+var preview_start_ms: int = 0
+var next_preview_at_ms: int = 0
 var world_log: RichTextLabel
 var status_label: Label
 var cognition_label: Label
@@ -56,6 +61,7 @@ func _ready() -> void:
     brain.connect("decision_ready", Callable(self, "_on_decision"))
     brain.connect("inference_failed", Callable(self, "_on_brain_error"))
     brain.connect("inference_metrics", Callable(self, "_on_brain_metrics"))
+    brain.connect("speech_preview", Callable(self, "_on_speech_preview"))
     _create_interface()
     _event("Habitacion de 404: tres cubos y sin rutinas automaticas de actividad.")
     _event("La memoria y el guardado V1 no se modificaran ni se borraran.")
@@ -233,6 +239,10 @@ func _create_interface() -> void:
     dialogue.size_flags_vertical = Control.SIZE_EXPAND_FILL
     dialogue.custom_minimum_size = Vector2(0, 160)
     contents.add_child(dialogue)
+    live_reply = RichTextLabel.new()
+    live_reply.custom_minimum_size = Vector2(0, 52)
+    live_reply.fit_content = false
+    contents.add_child(live_reply)
     chat_input = LineEdit.new()
     chat_input.placeholder_text = "Escribe a 404..."
     chat_input.text_submitted.connect(_send_chat)
@@ -275,6 +285,7 @@ func _refresh_status() -> void:
         cognition_label.text = "Iniciativa autónoma pausada."
 
 func _process(delta: float) -> void:
+    _render_speech_preview()
     elapsed_real += delta
     if not simulation_paused:
         body.tick(delta)
@@ -358,7 +369,40 @@ func _request_observation() -> void:
     if brain != null and not bool(brain.get("pending")):
         _start_decision("observacion_del_entorno", "Observa tus condiciones y reflexiona sobre lo que te parece importante.")
 
+func _on_speech_preview(partial: String) -> void:
+    if partial.is_empty():
+        return
+    if streaming_speech.is_empty():
+        preview_start_ms = Time.get_ticks_msec()
+        next_preview_at_ms = preview_start_ms + 700
+    streaming_speech = partial
+
+
+func _render_speech_preview() -> void:
+    if live_reply == null or streaming_speech == displayed_speech:
+        return
+    var now_ms: int = Time.get_ticks_msec()
+    # Agrupar lo recibido durante 0,7 s y mostrarlo en bloques,
+    # en lugar de revelar cada token con saltos irregulares.
+    if now_ms < next_preview_at_ms:
+        return
+    displayed_speech = streaming_speech
+    live_reply.clear()
+    live_reply.add_text("404: " + displayed_speech)
+    next_preview_at_ms = now_ms + 700
+
+
+func _clear_speech_preview() -> void:
+    streaming_speech = ""
+    displayed_speech = ""
+    preview_start_ms = 0
+    next_preview_at_ms = 0
+    if live_reply != null:
+        live_reply.clear()
+
+
 func _on_decision(decision: Dictionary) -> void:
+    _clear_speech_preview()
     var spoken: String = str(decision.get("speech", "")).strip_edges()
     if not spoken.is_empty():
         _say("404: " + spoken)
@@ -443,6 +487,7 @@ func _result(message: String) -> void:
     next_thought_at = minf(next_thought_at, elapsed_real + 2.0)
 
 func _on_brain_error(message: String) -> void:
+    _clear_speech_preview()
     _event("Error de inferencia: " + message)
     chat_retry_at = elapsed_real + 8.0
     next_thought_at = elapsed_real + autonomy_interval
