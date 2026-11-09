@@ -159,5 +159,32 @@ class Test404Architecture(unittest.TestCase):
         self.assertNotIn('if active_trigger.begins_with("mensaje_del_interlocutor"):', brain)
 
 
+    def test_chat_uses_real_dialogue_turns_from_autobiography(self):
+        journal = source("scripts/memory_journal.gd")
+        room = source("scripts/main404.gd")
+        bridge = source("scripts/brain404.gd")
+        self.assertIn("func recent_dialogue(limit: int = 8)", journal)
+        self.assertIn('if kind == "player_utterance":', journal)
+        self.assertIn('elif kind == "pomi_utterance":', journal)
+        self.assertIn("recent.reverse()", journal)
+        self.assertIn("journal.recent_dialogue(8)", room)
+        self.assertIn('journal.recall(memory_query, 4)', room)
+        self.assertIn("incoming_message: String", room)
+        self.assertIn("conversation_history: Array[Dictionary]", bridge)
+        self.assertIn('"messages": messages', bridge)
+        self.assertIn('messages.append({"role": "user", "content": incoming_message.substr(0, 450)})', bridge)
+        self.assertIn("El diario conserva más episodios", room)
+        self.assertNotIn('FileAccess.open(JOURNAL_PATH, FileAccess.WRITE)', room)
+
+    def test_opaque_panel_does_not_bleed_world_into_chat(self):
+        room = source("scripts/main404.gd")
+        self.assertIn("var solid_panel := StyleBoxFlat.new()", room)
+        self.assertIn('solid_panel.bg_color = Color("171a29")', room)
+        self.assertIn('panel.add_theme_stylebox_override("panel", solid_panel)', room)
+        self.assertIn('sign_label.no_depth_test = false', room)
+        self.assertIn('dialogue.add_theme_font_size_override("normal_font_size", 16)', room)
+
+
+
 if __name__ == "__main__":
     unittest.main()
