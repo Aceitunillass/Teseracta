@@ -124,7 +124,10 @@ class Test404Architecture(unittest.TestCase):
         self.assertIn('decision_ready.emit(final_decision)', bridge)
         self.assertIn("func _render_speech_preview() -> void:", room)
         self.assertIn("next_preview_at_ms = now_ms + 700", room)
-        self.assertIn('live_reply.add_text("404: " + displayed_speech)', room)
+        self.assertIn('transcript_lines[pending_reply_index] = "404: " + displayed_speech', room)
+        self.assertIn('transcript_lines[pending_reply_index] = "404: " + spoken', room)
+        self.assertIn('speech_preview.emit(partial)', bridge)
+        self.assertNotIn("live_reply = RichTextLabel.new()", room)
         self.assertIn('journal.record("pomi_utterance", spoken', room)
         self.assertNotIn('journal.record("pomi_utterance", partial', room)
 
@@ -139,6 +142,20 @@ class Test404Architecture(unittest.TestCase):
         self.assertIn('chat_area.add_child(chat_input)', room)
         self.assertNotIn('upper.add_child(chat_input)', room)
         self.assertLess(room.index('contents.add_child(chat_area)'), room.index('chat_area.add_child(chat_input)'))
+
+
+    def test_autonomous_and_direct_speech_share_one_live_transcript(self):
+        room = source("scripts/main404.gd")
+        brain = source("scripts/brain404.gd")
+        self.assertIn('func _render_transcript() -> void:', room)
+        self.assertIn('transcript_lines.append("404: ")', room)
+        self.assertIn('transcript_lines[pending_reply_index] = "404: " + displayed_speech', room)
+        self.assertIn('transcript_lines[pending_reply_index] = "404: " + spoken', room)
+        self.assertIn('dialogue.text = "\\n".join(PackedStringArray(transcript_lines)) + "\\n"', room)
+        self.assertIn('_clear_speech_preview()\n            _event("Reflexión autónoma', room)
+        self.assertNotIn('live_reply', room)
+        self.assertIn('var partial: String = _extract_partial_speech(assembled_answer)', brain)
+        self.assertNotIn('if active_trigger.begins_with("mensaje_del_interlocutor"):', brain)
 
 
 if __name__ == "__main__":
