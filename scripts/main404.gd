@@ -16,10 +16,10 @@ var pomi: Node3D
 var avatar: Node3D
 var camera: Camera3D
 var dialogue: RichTextLabel
-var live_reply: RichTextLabel
+var transcript_lines: Array[String] = []
 var streaming_speech: String = ""
 var displayed_speech: String = ""
-var preview_start_ms: int = 0
+var pending_reply_index: int = -1
 var next_preview_at_ms: int = 0
 var world_log: RichTextLabel
 var status_label: Label
@@ -272,11 +272,6 @@ func _create_interface() -> void:
     dialogue.custom_minimum_size = Vector2(0, 86)
     chat_area.add_child(dialogue)
 
-    live_reply = RichTextLabel.new()
-    live_reply.custom_minimum_size = Vector2(0, 48)
-    live_reply.fit_content = false
-    chat_area.add_child(live_reply)
-
     chat_input = LineEdit.new()
     chat_input.name = "EscribirA404"
     chat_input.placeholder_text = "Escribe a 404..."
@@ -289,9 +284,16 @@ func _create_interface() -> void:
     chat_buttons.add_child(_button("Enviar", func(): _send_chat(chat_input.text)))
     chat_buttons.add_child(_button("Observar", _request_observation))
 
+func _render_transcript() -> void:
+    if dialogue == null:
+        return
+    # Un solo historial: el mensaje parcial permanece en su posición definitiva.
+    dialogue.text = "\n".join(transcript_lines) + "\n"
+
+
 func _say(message: String) -> void:
-    if dialogue != null:
-        dialogue.add_text(message + "\n")
+    transcript_lines.append(message)
+    _render_transcript()
 
 func _event(message: String) -> void:
     if world_log != null:
@@ -404,42 +406,56 @@ func _request_observation() -> void:
 func _on_speech_preview(partial: String) -> void:
     if partial.is_empty():
         return
-    if streaming_speech.is_empty():
-        preview_start_ms = Time.get_ticks_msec()
-        next_preview_at_ms = preview_start_ms + 700
+    if pending_reply_index == -1:
+        # Reservar el mensaje exactamente donde aparecerá en el historial.
+        # Nunca crearlo en un cuadro separado debajo del diálogo.
+        pending_reply_index = transcript_lines.size()
+        transcript_lines.append("404: ")
+        next_preview_at_ms = Time.get_ticks_msec() + 700
     streaming_speech = partial
 
 
 func _render_speech_preview() -> void:
-    if live_reply == null or streaming_speech == displayed_speech:
+    if dialogue == null or pending_reply_index < 0 or streaming_speech == displayed_speech:
         return
     var now_ms: int = Time.get_ticks_msec()
-    # Agrupar lo recibido durante 0,7 s y mostrarlo en bloques,
-    # en lugar de revelar cada token con saltos irregulares.
     if now_ms < next_preview_at_ms:
         return
     displayed_speech = streaming_speech
-    live_reply.clear()
-    live_reply.add_text("404: " + displayed_speech)
+    transcript_lines[pending_reply_index] = "404: " + displayed_speech
+    _render_transcript()
+    # Se agrupa el texto durante 700 ms, sin limitar los tokens del modelo.
     next_preview_at_ms = now_ms + 700
 
 
 func _clear_speech_preview() -> void:
+    if pending_reply_index >= 0:
+        # Un fragmento incompleto no es una respuesta confirmada.
+        transcript_lines.remove_at(pending_reply_index)
+        _render_transcript()
+    pending_reply_index = -1
     streaming_speech = ""
     displayed_speech = ""
-    preview_start_ms = 0
     next_preview_at_ms = 0
-    if live_reply != null:
-        live_reply.clear()
 
 
 func _on_decision(decision: Dictionary) -> void:
-    _clear_speech_preview()
     var spoken: String = str(decision.get("speech", "")).strip_edges()
     if not spoken.is_empty():
-        _say("404: " + spoken)
+        if pending_reply_index >= 0:
+            # Completar la misma línea, sin añadir otra ni mover el mensaje.
+            transcript_lines[pending_reply_index] = "404: " + spoken
+            _render_transcript()
+        else:
+            _say("404: " + spoken)
         journal.record("pomi_utterance", spoken, body.day_index(), body.clock_text())
-    elif str(decision.get("_origin", "")) == "direct_message":
+    else:
+        _clear_speech_preview()
+    pending_reply_index = -1
+    streaming_speech = ""
+    displayed_speech = ""
+    next_preview_at_ms = 0
+    if spoken.is_empty() and str(decision.get("_origin", "")) == "direct_message":
         # Un JSON válido puede expresar silencio; hacerlo visible como estado
         # técnico, no fabricar una frase atribuida a 404 ni guardarla como diálogo.
         _say("[Sistema: 404 no ha emitido ninguna respuesta verbal.]")
