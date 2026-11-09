@@ -20,7 +20,7 @@ func _ready() -> void:
         AudioServer.set_bus_name(bus_idx, bus_name)
     AudioServer.set_bus_volume_db(bus_idx, -80.0)
     recorder = AudioEffectRecord.new()
-    recorder.format = AudioEffectRecord.FORMAT_16_BITS
+    recorder.format = AudioStreamWAV.FORMAT_16_BITS
     AudioServer.add_bus_effect(bus_idx, recorder)
     microphone = AudioStreamPlayer.new()
     microphone.stream = AudioStreamMicrophone.new()

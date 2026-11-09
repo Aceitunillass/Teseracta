@@ -53,15 +53,15 @@ func interactable(action: String, title: String, position_3d: Vector3, size_3d: 
     interactables[action] = {"title": title, "approach": approach}
 
 func _room_label(text_value: String, at: Vector3, color: Color) -> void:
-    var sign := Label3D.new()
-    sign.text = text_value
-    sign.font_size = 52
-    sign.pixel_size = 0.005
-    sign.modulate = color
-    sign.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-    sign.no_depth_test = true
-    sign.position = at
-    add_child(sign)
+    var room_label := Label3D.new()
+    room_label.text = text_value
+    room_label.font_size = 52
+    room_label.pixel_size = 0.005
+    room_label.modulate = color
+    room_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+    room_label.no_depth_test = true
+    room_label.position = at
+    add_child(room_label)
 
 func build() -> void:
     block("Solar", Vector3(0, -0.28, 0), Vector3(13, 0.35, 9), Color("141728"))
