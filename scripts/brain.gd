@@ -45,24 +45,14 @@ func request(prompt: String, model: String, api: Dictionary, observation: Dictio
         "required": ["speech", "reflection", "action"],
         "additionalProperties": false
     }
-    # Guía operativa del protocolo, independiente del prompt editable del usuario.
-    # Evita que un modelo pequeño confunda IDs de objetos con coordenadas.
-    var action_help: String = "\n\nCONTRATO DE ACCIONES (no es un guion de conducta):\n"
-    action_help += "Si deseas acercarte a un objeto visible como food: action={\"type\":\"MoveTo\",\"data\":{\"id\":\"food\"}}. "
-    action_help += "Si deseas ir a un punto libre: action={\"type\":\"MoveTo\",\"data\":{\"position\":[0.5,0.3]}}. "
-    action_help += "Para usar el objeto una vez cerca: action={\"type\":\"Use\",\"data\":{\"id\":\"food\"}}. "
-    action_help += "Stop y Wait usan data={}. Elige tú mismo si quieres actuar; la voz no mueve el cuerpo. "
-    action_help += "Si el mundo rechaza una acción, lee la razón y no repitas la misma orden sin cambiar algo o recabar información. "
-    action_help += "No repitas la misma frase o pregunta de conversaciones previas si ya ha sido respondida. "
-    action_help += "Si no sucede nada nuevo durante un ciclo autónomo puedes esperar en silencio (speech vacío), reflexionar o buscar otra experiencia. "
-    var system_text: String = prompt + action_help + "\n\nPROTOCOLO DEL MUNDO:\n" + JSON.stringify(api) + "\n\nOBSERVACIÓN ACTUAL:\n" + JSON.stringify(observation) + "\n\nÚLTIMOS HECHOS VERIFICADOS (incluidos rechazos de acciones):\n" + JSON.stringify(verified_events)
+    var system_text: String = prompt + "\n\nPROTOCOLO DEL MUNDO:\n" + JSON.stringify(api) + "\n\nOBSERVACIÓN ACTUAL:\n" + JSON.stringify(observation) + "\n\nÚLTIMOS HECHOS VERIFICADOS:\n" + JSON.stringify(verified_events)
     var turns: Array[Dictionary] = [{"role": "system", "content": system_text}]
     for item in history:
         var role: String = str(item.get("role", ""))
         if role == "user" or role == "assistant":
             turns.append({"role": role, "content": str(item.get("content", "")).substr(0, 400)})
     if current_message.strip_edges().is_empty():
-        turns.append({"role": "user", "content": "[Aviso interno del mundo, NO lo ha escrito la persona] Ha llegado una oportunidad de deliberar. Observa los resultados recientes. No necesitas repetir tu última intervención ni decir nada si no tienes una nueva idea. Puedes explorar, actuar o esperar por elección propia."})
+        turns.append({"role": "user", "content": "[Ciclo autónomo interno; no es un mensaje del usuario] Puedes reflexionar, hablar espontáneamente, elegir una acción o esperar. Decide libremente."})
     else:
         turns.append({"role": "user", "content": current_message.substr(0, 550)})
     var payload: Dictionary = {
