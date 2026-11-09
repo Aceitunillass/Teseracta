@@ -108,6 +108,24 @@ func recent_dialogue(limit: int = 8) -> Array[Dictionary]:
     return recent
 
 
+func recent_reflections(limit: int = 12) -> Array[Dictionary]:
+    # Son notas en el campo JSON "reflection" generado por el modelo.
+    # No son el razonamiento interno oculto ni hechos verificables del mundo.
+    var items: Array[Dictionary] = []
+    for index in range(entries.size() - 1, -1, -1):
+        var entry: Dictionary = entries[index]
+        if str(entry.get("kind", "")) != "private_reflection":
+            continue
+        var body_text: String = str(entry.get("text", "")).strip_edges()
+        if body_text.is_empty():
+            continue
+        items.append(entry.duplicate(true))
+        if items.size() >= maxi(1, limit):
+            break
+    items.reverse()
+    return items
+
+
 func movement_evidence(limit: int = 2) -> Array[Dictionary]:
     # Solo hechos confirmados por Godot y persistidos en el diario.
     # No convertir intenciones, frases ni reflexiones en desplazamientos.
