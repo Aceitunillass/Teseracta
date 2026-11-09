@@ -26,6 +26,8 @@ var editor_numbers: Dictionary = {}
 var autonomy_button: Button
 var confirm_clear: ConfirmationDialog
 var queued_messages: Array[String] = []
+var active_direct_message: String = ""
+var next_chat_retry: float = 0.0
 var debug_lines: Array[String] = []
 var partial_speech: String = ""
 var shown_partial: String = ""
@@ -490,11 +492,14 @@ func _send_message(content: String) -> void:
 
 
 func _send_next_if_possible() -> void:
-    if brain.pending or queued_messages.is_empty():
+    if brain.pending or queued_messages.is_empty() or elapsed < next_chat_retry:
         return
     var content: String = queued_messages[0]
     if _begin_request(content, false):
+        active_direct_message = content
         queued_messages.pop_front()
+    else:
+        next_chat_retry = elapsed + 8.0
 
 
 func _begin_request(message: String, autonomous: bool) -> bool:
@@ -528,6 +533,7 @@ func _on_partial_speech(text: String) -> void:
 
 
 func _on_reply(result: Dictionary) -> void:
+    active_direct_message = ""
     partial_speech = ""
     shown_partial = ""
     next_visual_update_ms = 0
@@ -553,6 +559,11 @@ func _on_brain_error(reason: String) -> void:
     next_visual_update_ms = 0
     _refresh_chat()
     _debug("Error del modelo: " + reason)
+    if not active_direct_message.is_empty():
+        queued_messages.push_front(active_direct_message)
+        active_direct_message = ""
+        next_chat_retry = elapsed + 8.0
+        _debug("Mensaje conservado; reintento en al menos 8 s.")
     autonomous_next = elapsed + 35.0
 
 
@@ -561,7 +572,10 @@ func _on_metrics(details: String) -> void:
 
 
 func _drain_world_events() -> void:
-    for item in world.drain_events():
+    var new_events: Array[Dictionary] = world.drain_events()
+    if new_events.is_empty():
+        return
+    for item in new_events:
         memory.record_event(item)
     _refresh_debug()
 
