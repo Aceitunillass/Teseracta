@@ -1,6 +1,7 @@
 extends Node
 signal reply_received(text: String)
 signal unavailable(reason: String)
+signal inference_stats(info: String)
 
 const ENDPOINT := "http://127.0.0.1:11434/api/chat"
 var model_name: String = "qwen3:1.7b"
@@ -26,7 +27,8 @@ func ask(user_text: String, facts: Dictionary) -> void:
     for item in history.slice(maxi(0, history.size() - 8), history.size()):
         messages.append(item)
     messages.append({"role": "user", "content": text_message})
-    var payload := {"model": model_name, "stream": false, "think": false, "messages": messages, "options": {"num_ctx": 2048, "num_predict": 160, "temperature": 0.75}}
+    # Respuestas cortas para reducir latencia. Keep-alive evita recargar el modelo en cada conversación.
+    var payload := {"model": model_name, "stream": false, "think": false, "keep_alive": "30m", "messages": messages, "options": {"num_ctx": 2048, "num_predict": 96, "temperature": 0.75}}
     pending = true
     var err: Error = http.request(ENDPOINT, PackedStringArray(["Content-Type: application/json"]), HTTPClient.METHOD_POST, JSON.stringify(payload))
     if err != OK:
@@ -56,6 +58,14 @@ func _completed(result: int, response_code: int, _headers: PackedStringArray, bo
         return
     history.append({"role": "assistant", "content": answer})
     reply_received.emit(answer)
+    # Ollama ofrece métricas en nanosegundos: visibles para diagnosticar CPU/GPU y carga.
+    var duration := float(response.get("total_duration", 0)) / 1000000000.0
+    var loaded := float(response.get("load_duration", 0)) / 1000000000.0
+    var generated := int(response.get("eval_count", 0))
+    var generate_s := float(response.get("eval_duration", 0)) / 1000000000.0
+    if duration > 0.0:
+        var tokens_s := float(generated) / maxf(generate_s, 0.001)
+        inference_stats.emit("Ollama: %.1f s (carga %.1f s, %d tokens, %.1f tokens/s)" % [duration, loaded, generated, tokens_s])
 
 func reset_history() -> void:
     history.clear()
