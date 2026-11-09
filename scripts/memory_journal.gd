@@ -81,6 +81,33 @@ func import_legacy_conversation(history: Variant, day: int, clock: String) -> vo
     record("migration_marker", signature, day, clock)
 
 
+func recent_dialogue(limit: int = 8) -> Array[Dictionary]:
+    # Historial real de turnos, no resumen semántico. Evitar reflexiones
+    # privadas y eventos del mundo: no son intervenciones de los hablantes.
+    # No se elimina ni modifica ningún registro original.
+    var recent: Array[Dictionary] = []
+    var wanted: int = clampi(limit, 1, 12)
+    for idx in range(entries.size() - 1, -1, -1):
+        var entry: Dictionary = entries[idx]
+        var kind: String = str(entry.get("kind", ""))
+        var role: String = ""
+        if kind == "player_utterance":
+            role = "user"
+        elif kind == "pomi_utterance":
+            role = "assistant"
+        else:
+            continue
+        var content: String = str(entry.get("text", "")).strip_edges()
+        if content.is_empty():
+            continue
+        # Se conserva el diario entero, solo limitamos el texto que se manda a Ollama.
+        recent.append({"role": role, "content": content.substr(0, 450)})
+        if recent.size() >= wanted:
+            break
+    recent.reverse()
+    return recent
+
+
 func recall(query: String, count: int = 8) -> Array[Dictionary]:
     # Recuperacion lexical economica: relevancia + recencia. No relee los archivos
     # ni lanza el LLM para cada recuerdo.
