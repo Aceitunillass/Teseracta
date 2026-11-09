@@ -22,16 +22,21 @@ var needs_label: Label
 var inventory_label: Label
 var log_view: RichTextLabel
 var chat_input: LineEdit
+var queue_status_label: Label
 var mic_button: Button
 var pause_button: Button
 var drag_last_pos := Vector2.ZERO
+var chat_stream_started: bool = false
+var queued_chat_messages: Array[String] = []
 
 func _ready() -> void:
     _build_scene()
     ollama = OllamaScript.new()
     add_child(ollama)
     ollama.reply_received.connect(_on_ollama_answer)
+    ollama.connect("reply_delta", Callable(self, "_on_ollama_chunk"))
     ollama.unavailable.connect(_on_ollama_error)
+    ollama.connect("inference_stats", Callable(self, "_on_ollama_stats"))
     voice = VoiceScript.new()
     add_child(voice)
     voice.transcript_ready.connect(_on_transcript)
@@ -142,6 +147,10 @@ func _build_ui() -> void:
     chat_input.placeholder_text = "Escríbele algo al Pomi..."
     chat_input.text_submitted.connect(_send_chat)
     content.add_child(chat_input)
+    queue_status_label = Label.new()
+    queue_status_label.text = ""
+    queue_status_label.add_theme_font_size_override("font_size", 11)
+    content.add_child(queue_status_label)
     var chat_buttons := HBoxContainer.new()
     content.add_child(chat_buttons)
     chat_buttons.add_child(_make_button("Enviar", func(): _send_chat(chat_input.text)))
@@ -161,7 +170,7 @@ func _process(delta: float) -> void:
         dwell_time -= delta
         if dwell_time <= 0.0:
             var action_result: String = state.execute_action(busy_action)
-            _log("Pomi: " + action_result)
+            _log("[Acción verificada] " + action_result)
             busy_action = ""
             idle_time = 3.5
     elif busy_action.is_empty() and not pomi.moving:
@@ -212,24 +221,101 @@ func _log(message: String) -> void:
         log_view.append_text(message + "\n")
 
 func _send_chat(text_value: String) -> void:
-    var text_message := text_value.strip_edges().substr(0, 700)
+    var text_message := text_value.strip_edges()
     if text_message.is_empty():
         return
     chat_input.clear()
-    _log("Tú: " + text_message)
     state.remember("El jugador dijo: " + text_message.substr(0, 70))
-    var facts: Dictionary = {"nombre": "Pomi 01", "ubicacion": "Su casa en Teseracta", "día": state.day_index(), "hora": state.clock_text(), "necesidades": state.needs, "comida_disponible": state.inventory["food"], "agua_disponible": state.inventory["water"], "recuerdos_relevantes": state.history.slice(maxi(0, state.history.size() - 5), state.history.size())}
+    # No intercalar un nuevo mensaje entre fragmentos de la respuesta que aún se dibuja.
+    if bool(ollama.get("pending")):
+        queued_chat_messages.append(text_message)
+        _update_queue_status()
+        return
+    _log("Tú: " + text_message)
+    _request_pomi_reply(text_message)
+
+
+func _request_pomi_reply(text_message: String) -> void:
+    # Diferenciar sucesos registrados de diálogos: algo dicho por el jugador no es
+    # automáticamente un hecho verdadero, aunque se haya almacenado en el historial.
+    var events: Array[String] = []
+    for record in state.history:
+        var event_text: String = str(record)
+        if event_text.contains("El jugador dijo:") or event_text.contains("Pomi respondió al jugador:"):
+            continue
+        events.append(event_text)
+    var recent_events: Array[String] = events.slice(maxi(0, events.size() - 5), events.size())
+    var current_room := "cocina y salón"
+    if pomi.position.x < -2.0:
+        current_room = "dormitorio"
+    elif pomi.position.x > 2.0:
+        current_room = "baño"
+    var current_activity := "caminando hacia %s" % busy_action if pomi.moving else "sin desplazamiento"
+    var facts: Dictionary = {
+        "nombre": "Pomi 01",
+        "vivienda": "Casa piloto en Teseracta",
+        "habitacion_actual": current_room,
+        "actividad_actual_observable": current_activity,
+        "día": state.day_index(),
+        "hora": state.clock_text(),
+        "necesidades": state.needs.duplicate(true),
+        "comida_disponible": state.inventory["food"],
+        "agua_disponible": state.inventory["water"],
+        "acontecimientos_verificados_recientes": recent_events
+    }
+    chat_stream_started = false
     ollama.ask(text_message, facts)
 
+
+func _on_ollama_chunk(delta_text: String) -> void:
+    if log_view == null:
+        return
+    if not chat_stream_started:
+        log_view.append_text("Pomi: ")
+        chat_stream_started = true
+    log_view.append_text(delta_text)
+
+
 func _on_ollama_answer(text_value: String) -> void:
-    _log("Pomi: " + text_value)
+    if chat_stream_started:
+        log_view.append_text("\n")
+    else:
+        _log("Pomi: " + text_value)
+    chat_stream_started = false
     state.remember("Pomi respondió al jugador: " + text_value.substr(0, 70))
+    call_deferred("_dispatch_queued_chat")
+
 
 func _on_ollama_error(reason: String) -> void:
+    if chat_stream_started and log_view:
+        log_view.append_text("\n")
+    chat_stream_started = false
     _log("[IA no disponible] " + reason)
+    call_deferred("_dispatch_queued_chat")
+
+
+func _dispatch_queued_chat() -> void:
+    if not queued_chat_messages.is_empty() and not bool(ollama.get("pending")):
+        var next_message: String = queued_chat_messages.pop_front()
+        _update_queue_status()
+        _log("Tú: " + next_message)
+        _request_pomi_reply(next_message)
+
+
+func _update_queue_status() -> void:
+    if queue_status_label == null:
+        return
+    if queued_chat_messages.is_empty():
+        queue_status_label.text = ""
+    else:
+        queue_status_label.text = "%d mensaje(s) recibido(s) y pendiente(s) de respuesta" % queued_chat_messages.size()
+
+
+func _on_ollama_stats(info: String) -> void:
+    _log("[Diagnóstico] " + info)
+
 
 func _on_transcript(text_value: String) -> void:
-    _log("[Voz reconocida] " + text_value)
     _send_chat(text_value)
 
 func _on_voice_error(reason: String) -> void:
