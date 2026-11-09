@@ -197,7 +197,7 @@ class Test404Architecture(unittest.TestCase):
         self.assertIn("movimiento_posible_ahora", room)
         self.assertIn("motivo_si_no_puede_moverse", room)
         self.assertIn("protocolo_de_accion", room)
-        self.assertIn('if action == "use" and target == "center":', room)
+        self.assertIn('if action == "use" and (target == "center" or target == "point"):', room)
         self.assertIn('use_after_walk = target if action == "use" else ""', room)
         self.assertIn("body.interact(should_use)", room)
         self.assertIn('action="move"', identity)
@@ -228,6 +228,37 @@ class Test404Architecture(unittest.TestCase):
         self.assertIn('puedes revisar tu hipótesis', identity)
         self.assertIn('no demuestra tener cuerpo biológico exterior ni conciencia', identity)
         self.assertNotIn('if action == "move":\n        _result("Desplazamiento comprobado:', room)
+
+
+
+    def test_free_waypoint_movement_is_validated_not_scripted(self):
+        bridge = source("scripts/brain404.gd")
+        room = source("scripts/main404.gd")
+        identity = source("config/identity_404_runtime.txt")
+        self.assertIn('"target": {"type": "string", "enum": ["none", "food", "bed", "toilet", "center", "point"]}', bridge)
+        self.assertIn('"point": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}', bridge)
+        self.assertIn('"point": decision.get("point", [])', bridge)
+        self.assertIn('func _execute_proposal(action: String, target: String, point: Variant = [])', room)
+        self.assertIn('if action == "move" and target == "point":', room)
+        self.assertIn('x < -3.4 or x > 3.4', room)
+        self.assertIn('z < -1.15 or z > 2.45', room)
+        self.assertIn('walk_target = requested_position', room)
+        self.assertIn('target="point", point=[x,z]', identity)
+        self.assertIn('"none" NO es un sitio al que caminar', identity)
+        self.assertIn('journal.record("world_event", message', room)
+
+    def test_reflection_window_is_separate_from_diary_and_speech(self):
+        room = source("scripts/main404.gd")
+        journal = source("scripts/memory_journal.gd")
+        self.assertIn('_button("Reflexiones", _toggle_reflections)', room)
+        self.assertIn('reflection_panel.name = "ReflexionesDeclaradas"', room)
+        self.assertIn('reflection_panel.visible = false', room)
+        self.assertIn('func _refresh_reflections() -> void:', room)
+        self.assertIn('journal.recent_reflections(12)', room)
+        self.assertIn('if str(entry.get("kind", "")) != "private_reflection":', journal)
+        self.assertIn('journal.record("private_reflection", reflection', room)
+        self.assertIn('NO acceso a razonamiento oculto ni pruebas de acciones', room)
+        self.assertNotIn('reflection_view.add_text(streaming_speech)', room)
 
 
 
