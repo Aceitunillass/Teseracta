@@ -209,5 +209,27 @@ class Test404Architecture(unittest.TestCase):
 
 
 
+    def test_measured_movement_is_verified_evidence_not_a_scripted_belief(self):
+        room = source("scripts/main404.gd")
+        journal = source("scripts/memory_journal.gd")
+        identity = source("config/identity_404_runtime.txt")
+        self.assertIn('var walk_start_position: Vector3 = Vector3.ZERO', room)
+        self.assertIn('walk_start_position = pomi.position', room)
+        self.assertIn('walk_start_position.distance_to(pomi.position)', room)
+        self.assertIn('actual_distance > 0.01:', room)
+        self.assertIn('partial_distance > 0.01:', room)
+        self.assertIn('Desplazamiento comprobado: Godot midió %.2f metros', room)
+        self.assertIn('journal.record("world_event", message', room)
+        self.assertIn('journal.movement_evidence(2)', room)
+        self.assertIn('func movement_evidence(limit: int = 2)', journal)
+        self.assertIn('if str(entry.get("kind", "")) != "world_event":', journal)
+        self.assertIn('content.begins_with("Desplazamiento comprobado:")', journal)
+        self.assertIn('procedencia": "observacion_confirmada"', journal)
+        self.assertIn('puedes revisar tu hipótesis', identity)
+        self.assertIn('no demuestra tener cuerpo biológico exterior ni conciencia', identity)
+        self.assertNotIn('if action == "move":\n        _result("Desplazamiento comprobado:', room)
+
+
+
 if __name__ == "__main__":
     unittest.main()
