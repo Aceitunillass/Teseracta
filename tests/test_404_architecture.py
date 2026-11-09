@@ -73,7 +73,7 @@ class Test404Architecture(unittest.TestCase):
         bridge = source("scripts/brain404.gd")
         room = source("scripts/main404.gd")
         self.assertIn("func cancel_autonomous_for_chat() -> bool:", bridge)
-        self.assertIn("http.cancel_request()", bridge)
+        self.assertIn("client.close()", bridge)
         self.assertIn('brain.call("cancel_autonomous_for_chat")', room)
         self.assertIn('chat_retry_at = elapsed_real + 8.0', room)
         self.assertIn('brain.call("seconds_waiting")', room)
@@ -93,13 +93,40 @@ class Test404Architecture(unittest.TestCase):
         room = source("scripts/main404.gd")
         runtime = source("config/identity_404_runtime.txt")
         self.assertIn('speech_schema["minLength"] = 1', brain)
-        self.assertIn("request_serial += 1", brain)
-        self.assertIn("received_serial != request_serial", brain)
+        self.assertIn('var client: HTTPClient = HTTPClient.new()', brain)
+        self.assertIn('func _consume_lines() -> void:', brain)
+        self.assertIn('func _extract_partial_speech(raw_json: String) -> String:', brain)
+        self.assertIn('speech_preview.emit(partial)', brain)
         self.assertIn('"_origin": "direct_message" if was_direct_message else "autonomous"', brain)
         self.assertIn("404 no ha emitido ninguna respuesta verbal", room)
         self.assertIn("interaction_type", runtime)
         self.assertIn("NO pongas toda la respuesta únicamente en reflection", runtime)
         self.assertIn("habla: %d caracteres", brain)
+
+
+
+    def test_emergency_refill_and_critical_health_pause(self):
+        room = source("scripts/main404.gd")
+        self.assertIn("func _restock_food() -> void:", room)
+        self.assertIn("func _restore_404_health() -> void:", room)
+        self.assertIn("func _toggle_simulation_pause() -> void:", room)
+        self.assertIn("if body.health <= 10.0:", room)
+        self.assertIn('simulation_paused = true', room)
+        self.assertIn('body.food_units += 12', room)
+        self.assertIn('body.health = 100.0', room)
+        self.assertIn('_write_state(false)', room)
+
+    def test_streamed_speech_is_buffered_but_actions_stay_verified(self):
+        bridge = source("scripts/brain404.gd")
+        room = source("scripts/main404.gd")
+        self.assertIn('"stream": true', bridge)
+        self.assertIn('speech_preview.emit(partial)', bridge)
+        self.assertIn('decision_ready.emit(final_decision)', bridge)
+        self.assertIn("func _render_speech_preview() -> void:", room)
+        self.assertIn("next_preview_at_ms = now_ms + 700", room)
+        self.assertIn('live_reply.add_text("404: " + displayed_speech)', room)
+        self.assertIn('journal.record("pomi_utterance", spoken', room)
+        self.assertNotIn('journal.record("pomi_utterance", partial', room)
 
 
 
