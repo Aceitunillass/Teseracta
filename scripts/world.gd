@@ -200,7 +200,12 @@ func step(delta: float) -> void:
         _event("move_completed", "Godot verificó que 404 recorrió %.2f metros hasta (%.2f, %.2f)." % [journey_origin.distance_to(agent_position), destination.x, destination.z])
         return
     var step_size: float = minf(WALK_SPEED * delta, remaining.length())
-    agent_position += remaining.normalized() * step_size
+    var candidate: Vector3 = agent_position + remaining.normalized() * step_size
+    if not _valid_position(candidate.x, candidate.z):
+        moving = false
+        _event("move_blocked", "404 se detuvo al encontrar un cubo u obstáculo en su trayectoria. Requiere otro itinerario.")
+        return
+    agent_position = candidate
 
 
 func add_box() -> void:
