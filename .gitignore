@@ -1,0 +1,12 @@
+.godot/
+.import/
+*.tmp
+*.log
+__pycache__/
+*.pyc
+.venv/
+voice/models/
+voice/.env
+local_models/
+saves/
+.DS_Store
