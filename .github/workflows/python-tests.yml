@@ -1,7 +1,7 @@
 name: Comprobaciones del prototipo
 on:
   push:
-    branches: ["dev/**"]
+    branches: ["main", "dev/**"]
   pull_request:
 
 jobs:
