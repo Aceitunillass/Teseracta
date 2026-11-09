@@ -353,7 +353,7 @@ func _on_decision(decision: Dictionary) -> void:
     call_deferred("_continue_dialogue")
 
 func _continue_dialogue() -> void:
-    if not queued_chat.is_empty() and brain != null and not bool(brain.get("pending")) and not moving:
+    if not queued_chat.is_empty() and brain != null and not bool(brain.get("pending")) and not moving and elapsed_real >= chat_retry_at:
         _dispatch_chat()
 
 func _execute_proposal(action: String, target: String) -> void:
