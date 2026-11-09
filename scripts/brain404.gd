@@ -194,11 +194,12 @@ func _consume_lines() -> void:
             var delta_text: String = str(message.get("content", ""))
             if not delta_text.is_empty():
                 assembled_answer += delta_text
-                if active_trigger.begins_with("mensaje_del_interlocutor"):
-                    var partial: String = _extract_partial_speech(assembled_answer)
-                    if partial.length() > last_preview.length() and partial.begins_with(last_preview):
-                        last_preview = partial
-                        speech_preview.emit(partial)
+                # La voz espontánea y la dirigida se visualizan igual.
+                # El campo "speech" es el único visible; nunca "reflection".
+                var partial: String = _extract_partial_speech(assembled_answer)
+                if partial.length() > last_preview.length() and partial.begins_with(last_preview):
+                    last_preview = partial
+                    speech_preview.emit(partial)
         if bool(packet.get("done", false)):
             _finish(packet)
             return
