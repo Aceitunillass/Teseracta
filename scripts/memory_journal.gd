@@ -108,6 +108,28 @@ func recent_dialogue(limit: int = 8) -> Array[Dictionary]:
     return recent
 
 
+func movement_evidence(limit: int = 2) -> Array[Dictionary]:
+    # Solo hechos confirmados por Godot y persistidos en el diario.
+    # No convertir intenciones, frases ni reflexiones en desplazamientos.
+    var selected: Array[Dictionary] = []
+    for index in range(entries.size() - 1, -1, -1):
+        var entry: Dictionary = entries[index]
+        if str(entry.get("kind", "")) != "world_event":
+            continue
+        var content: String = str(entry.get("text", ""))
+        if not content.begins_with("Desplazamiento comprobado:"):
+            continue
+        selected.append({
+            "evento": content.substr(0, 240),
+            "dia": entry.get("day", 0),
+            "hora": entry.get("clock", ""),
+            "procedencia": "observacion_confirmada"
+        })
+        if selected.size() >= maxi(1, limit):
+            break
+    return selected
+
+
 func recall(query: String, count: int = 8) -> Array[Dictionary]:
     # Recuperacion lexical economica: relevancia + recencia. No relee los archivos
     # ni lanza el LLM para cada recuerdo.
