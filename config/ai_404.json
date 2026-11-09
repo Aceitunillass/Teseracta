@@ -1,4 +1,6 @@
 {
   "model": "ministral-3:8b",
-  "autonomy_interval_seconds": 55
+  "autonomy_interval_seconds": 55,
+  "request_timeout_seconds": 90,
+  "context_window": 3072
 }
